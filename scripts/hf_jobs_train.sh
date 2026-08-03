@@ -23,6 +23,7 @@ echo "[hf-jobs] flavor=$FLAVOR iters=$ITERS n_envs=$N_ENVS timeout=$TIMEOUT"
 echo "[hf-jobs] image=$IMAGE"
 
 # Detach so we can poll logs; token from env is picked up by hf CLI.
+# Use `--` so hf CLI does not steal bash flags (-l is --label on jobs run).
 "$HF" jobs run \
   --flavor "$FLAVOR" \
   --timeout "$TIMEOUT" \
@@ -30,7 +31,7 @@ echo "[hf-jobs] image=$IMAGE"
   -s HF_TOKEN \
   -d \
   "$IMAGE" \
-  bash -lc "
+  -- bash -c "
 set -euo pipefail
 apt-get update -qq
 apt-get install -y -qq git wget ca-certificates libgl1 libglib2.0-0 >/dev/null
