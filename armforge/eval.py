@@ -13,7 +13,6 @@ import argparse
 import pickle
 import re
 from importlib import metadata
-from pathlib import Path
 
 import torch
 

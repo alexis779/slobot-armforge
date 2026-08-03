@@ -12,7 +12,6 @@ if str(_ROOT) not in sys.path:
 import argparse
 import json
 import time
-from pathlib import Path
 
 import torch
 
