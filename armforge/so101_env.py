@@ -108,34 +108,36 @@ class SO101KitchenEnv:
             CameraOptions = RasterizerCameraOptions
             cam_kwargs = {}
 
-        # Single high-res episode camera (demo angle). Training RGB is downscaled from this view.
-        self.episode_cam = self.scene.add_sensor(
-            CameraOptions(
-                res=(self.episode_width, self.episode_height),
-                pos=(0.9, 0.0, 0.45),
-                lookat=(0.15, 0.0, 0.08),
-                fov=50,
-                **cam_kwargs,
+        self.episode_cam = None
+        self.vis_cam = None
+        if env_cfg.get("enable_cameras", True):
+            # Single high-res episode camera. Training RGB is downscaled from this view.
+            self.episode_cam = self.scene.add_sensor(
+                CameraOptions(
+                    res=(self.episode_width, self.episode_height),
+                    pos=(0.9, 0.0, 0.45),
+                    lookat=(0.15, 0.0, 0.08),
+                    fov=50,
+                    **cam_kwargs,
+                )
             )
-        )
-        # Alias used by record_video / eval scripts.
-        self.vis_cam = self.episode_cam
+            self.vis_cam = self.episode_cam
 
-        def _read_episode_cam(cam):
-            rgb = cam.read(envs_idx=0).rgb
-            if isinstance(rgb, torch.Tensor):
-                rgb = rgb.detach()
-            if rgb.ndim == 4:
-                rgb = rgb[0]
-            return rgb[..., :3]
+            def _read_episode_cam(cam):
+                rgb = cam.read(envs_idx=0).rgb
+                if isinstance(rgb, torch.Tensor):
+                    rgb = rgb.detach()
+                if rgb.ndim == 4:
+                    rgb = rgb[0]
+                return rgb[..., :3]
 
-        record_video = env_cfg.get("record_video", {})
-        for cam_name, filename in record_video.items():
-            cam = getattr(self, cam_name)
-            self.scene.start_recording(
-                data_func=partial(_read_episode_cam, cam),
-                rec_options=gs.recorders.VideoFile(filename=filename),
-            )
+            record_video = env_cfg.get("record_video", {})
+            for cam_name, filename in record_video.items():
+                cam = getattr(self, cam_name)
+                self.scene.start_recording(
+                    data_func=partial(_read_episode_cam, cam),
+                    rec_options=gs.recorders.VideoFile(filename=filename),
+                )
 
         self.scene.build(n_envs=env_cfg["num_envs"], env_spacing=(1.0, 1.0))
         self.robot.set_pd_gains()
@@ -192,7 +194,8 @@ class SO101KitchenEnv:
             self.episode_length_buf.masked_fill_(envs_idx, 0)
             self.reset_buf.masked_fill_(envs_idx, True)
 
-        self.episode_cam._stale = True
+        if self.episode_cam is not None:
+            self.episode_cam._stale = True
 
         n_envs = envs_idx.sum() if envs_idx is not None else self.num_envs
         self.extras["episode"] = {}
@@ -254,6 +257,8 @@ class SO101KitchenEnv:
 
     def get_rgb_images(self, normalize: bool = True) -> torch.Tensor:
         """High-res episode camera, downscaled to training resolution. Shape (B, 3, H, W)."""
+        if self.episode_cam is None:
+            raise RuntimeError("Cameras disabled (enable_cameras=False); cannot read RGB.")
         rgb = self.episode_cam.read().rgb  # (B, H_hi, W_hi, 3)
         rgb = rgb.permute(0, 3, 1, 2).float()
         if normalize:

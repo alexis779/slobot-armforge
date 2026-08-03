@@ -67,6 +67,9 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
 
     env_cfg["num_envs"] = args.num_envs if args.stage == "rl" else 8
+    # RL teacher is privileged-state only; skip cameras for throughput on cloud GPUs.
+    if args.stage == "rl":
+        env_cfg["enable_cameras"] = False
 
     with open(log_dir / "cfgs.pkl", "wb") as f:
         pickle.dump((env_cfg, reward_scales, robot_cfg, rl_train_cfg, bc_train_cfg), f)
