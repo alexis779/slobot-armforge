@@ -1,0 +1,26 @@
+# --- Generated / local ---
+outputs/
+logs/
+datasets/
+*.mp4
+*.npz
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.ipynb_checkpoints/
+uv.lock
+
+# --- Tooling / OS / editor ---
+.DS_Store
+.vscode/
+.idea/
+MUJOCO_LOG.TXT
+*.whl

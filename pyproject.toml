@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slobot-armforge"
+version = "0.1.0"
+description = "ArmForge: teach SO-ARM-101 cube-disk policies in Genesis on AMD Radeon / ROCm."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "genesis-world>=1.1.2",
+    "numpy>=1.26.4",
+    "tensordict",
+    "huggingface_hub",
+    "Pillow",
+    "rsl-rl-lib>=5.0.0",
+]
+
+[project.optional-dependencies]
+learn = [
+    "torch",
+    "tensorboard",
+]
+
+[tool.uv]
+override-dependencies = [
+    "numba>=0.59",
+    "llvmlite>=0.42",
+]
+
+[tool.setuptools.packages.find]
+include = ["armforge*"]
+
+[tool.ruff]
+line-length = 120
