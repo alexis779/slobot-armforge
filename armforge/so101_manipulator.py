@@ -1,4 +1,4 @@
-"""SO-ARM-101 manipulator with joint-space arm delta control (gripper pinned open)."""
+"""SO-ARM-101 manipulator with joint-space arm deltas + gripper control."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from assets import so101_mjcf_path
 
 
 class SO101Manipulator:
-    """5-DoF arm controlled via joint deltas; gripper stays open for push tasks."""
+    """5-DoF arm + 1-DoF gripper controlled via joint deltas (pick-and-place)."""
 
     def __init__(self, num_envs: int, scene: gs.Scene, args: dict, device: str = "cpu"):
         self._device = device
@@ -35,12 +35,12 @@ class SO101Manipulator:
         self._init()
 
     def set_pd_gains(self) -> None:
-        # STS3215-tuned gains from the MJCF; stiffened + higher force limit so the arm can push the cube.
-        kp = torch.tensor([50.0, 50.0, 50.0, 40.0, 25.0, 25.0], device=self._device)
-        kv = torch.tensor([2.5, 2.5, 2.5, 2.0, 1.2, 1.2], device=self._device)
+        # Moderate gains: enough for grasp/lift without batting the cube off the table.
+        kp = torch.tensor([40.0, 40.0, 40.0, 30.0, 20.0, 20.0], device=self._device)
+        kv = torch.tensor([2.0, 2.0, 2.0, 1.5, 1.0, 1.0], device=self._device)
         self._robot_entity.set_dofs_kp(kp)
         self._robot_entity.set_dofs_kv(kv)
-        force = torch.tensor([8.0, 8.0, 8.0, 5.0, 4.0, 4.0], device=self._device)
+        force = torch.tensor([5.0, 5.0, 5.0, 4.0, 3.0, 3.0], device=self._device)
         self._robot_entity.set_dofs_force_range(-force, force)
 
     def _init(self) -> None:
@@ -65,11 +65,12 @@ class SO101Manipulator:
         )
 
     def apply_action(self, action: torch.Tensor) -> None:
-        """Apply scaled arm joint deltas; keep gripper open so jaw chatter cannot break holds."""
+        """Apply scaled arm joint deltas (5) + absolute gripper command (1) in [-1, 1]."""
         q_pos = self._robot_entity.get_qpos().clone()
-        n_arm = min(action.shape[-1], self._arm_dof_dim)
-        q_pos[:, :n_arm] = q_pos[:, :n_arm] + action[:, :n_arm]
-        q_pos[:, self._gripper_dof] = self._gripper_open_dof
+        q_pos[:, : self._arm_dof_dim] = q_pos[:, : self._arm_dof_dim] + action[:, : self._arm_dof_dim]
+        grip_cmd = action[:, self._arm_dof_dim]
+        grip = 0.5 * (grip_cmd + 1.0) * (self._gripper_open_dof - self._gripper_close_dof) + self._gripper_close_dof
+        q_pos[:, self._gripper_dof] = grip.unsqueeze(-1)
         self._robot_entity.control_dofs_position(position=q_pos)
 
     @property
@@ -92,3 +93,10 @@ class SO101Manipulator:
     @property
     def qpos(self) -> torch.Tensor:
         return self._robot_entity.get_qpos()
+
+    @property
+    def gripper_openness(self) -> torch.Tensor:
+        """1 = fully open, 0 = fully closed."""
+        q = self._robot_entity.get_qpos()[:, self._arm_dof_dim]
+        span = max(self._gripper_open_dof - self._gripper_close_dof, 1e-6)
+        return ((q - self._gripper_close_dof) / span).clamp(0.0, 1.0)

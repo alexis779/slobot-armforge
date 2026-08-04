@@ -37,7 +37,8 @@ def load_rl_policy(env, train_cfg, log_dir):
     if not checkpoint_files:
         raise FileNotFoundError(f"No checkpoint files found in {log_dir}")
     last_ckpt = max(checkpoint_files, key=lambda f: int(re.search(r"\d+", f.stem).group()))
-    runner.load(last_ckpt)
+    # HF Jobs checkpoints are CUDA tensors; map to local device for CPU / ROCm eval.
+    runner.load(last_ckpt, map_location=str(gs.device))
     print(f"Loaded RL checkpoint from {last_ckpt}")
     return runner.get_inference_policy(device=gs.device)
 
@@ -69,7 +70,7 @@ def main():
     with open(log_dir / "cfgs.pkl", "rb") as f:
         env_cfg, reward_cfg, robot_cfg, rl_train_cfg, bc_train_cfg = pickle.load(f)
 
-    env_cfg["num_envs"] = 1 if args.vis else 10
+    env_cfg["num_envs"] = 1 if (args.vis or args.record) else 10
     env_cfg["box_fixed"] = False
     env_cfg["visualize_camera"] = args.vis
     if args.record:
@@ -78,6 +79,7 @@ def main():
             "episode_cam": str(log_dir / "episode.mp4"),
         }
         env_cfg["visualize_camera"] = True
+        env_cfg["enable_cameras"] = True
 
     env = SO101KitchenEnv(
         env_cfg=env_cfg,

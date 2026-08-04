@@ -80,35 +80,37 @@ def get_train_cfg(exp_name: str):
 def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
-        # Arm joint deltas only; gripper is pinned open in the manipulator.
-        "num_actions": 5,
-        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05],
-        "episode_length_s": 6.0,
+        # Pick-and-place: 5 arm deltas + gripper open/close.
+        "num_actions": 6,
+        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05, 1.0],
+        "episode_length_s": 8.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
-        # Must be free so the policy can push / place the cube (eval already forced False).
         "box_fixed": False,
-        # Raised tabletop: floor-height cubes sit below the gripper frame reach envelope.
         "table_height": 0.10,
-        # Wider disk + larger spawn sep so random brushes are rare and real pushes matter.
-        "disk_radius": 0.08,
-        "success_hold_s": 0.2,
+        # Raised pedestal: sliding/pushing cannot seat the cube; must lift over the lip.
+        "disk_radius": 0.06,
+        "disk_height": 0.04,
+        "success_hold_s": 0.3,
         "min_cube_disk_sep": 0.12,
+        "grasp_dist": 0.035,
+        "lift_height": 0.03,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
         "task": task,
     }
-    # Dense shaping guides the push; success is a one-shot bonus (not × ctrl_dt).
+    # Staged shaping: reach → grasp → lift → place; success is a one-shot held bonus.
     reward_scales = {
-        "reach": 0.3,
-        "place": 2.0,
-        "success": 20.0,
+        "reach": 0.5,
+        "grasp": 1.5,
+        "lift": 2.0,
+        "place": 3.0,
+        "success": 25.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",
         "jaw_link_name": "moving_jaw_so101_v1",
-        # Home pose aimed at the raised tabletop (gripper ~ table height).
         "default_arm_dof": [0.0, -1.2, 1.5, 1.2, 0.0],
         "default_gripper_dof": [1.7],
         "gripper_open": 1.7,

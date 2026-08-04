@@ -1,4 +1,4 @@
-"""SO-ARM-101 cube-disk manipulation environment."""
+"""SO-ARM-101 cube-disk pick-and-place environment."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ except ImportError:
 
 
 class SO101KitchenEnv:
-    """Gym-style parallel env: place a cube on a disk with SO-101 joint-space control."""
+    """Gym-style parallel env: pick a cube and place it on a raised disk."""
 
     def __init__(
         self,
@@ -41,6 +41,8 @@ class SO101KitchenEnv:
         self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.ctrl_dt)
         self.success_hold_steps = max(1, math.ceil(env_cfg.get("success_hold_s", 0.4) / self.ctrl_dt))
         self.min_cube_disk_sep = float(env_cfg.get("min_cube_disk_sep", 0.08))
+        self.grasp_dist = float(env_cfg.get("grasp_dist", 0.035))
+        self.lift_height = float(env_cfg.get("lift_height", 0.03))
         self.env_cfg = env_cfg
         self.reward_scales = dict(reward_cfg)
         self.action_scales = torch.tensor(env_cfg["action_scales"], device=self.device)
@@ -73,6 +75,8 @@ class SO101KitchenEnv:
 
         self.scene.add_entity(gs.morphs.Plane())
         self.table_height = float(env_cfg.get("table_height", 0.10))
+        self.disk_height = float(env_cfg.get("disk_height", 0.04))
+        self.disk_radius = float(env_cfg.get("disk_radius", 0.06))
         # Raised work surface so cube/disk sit inside the SO-101 gripper-frame reach envelope.
         self.scene.add_entity(
             gs.morphs.Box(
@@ -93,9 +97,9 @@ class SO101KitchenEnv:
 
         cube_size = env_cfg.get("box_size", [0.03, 0.03, 0.03])
         self.cube_half_z = 0.5 * float(cube_size[2])
-        # Default free: a fixed cube cannot be placed, so place/success would only reflect spawn luck.
+        # Heavier + grippier cube so the jaw can pinch without batting it away.
         self.object = self.scene.add_entity(
-            material=gs.materials.Rigid(rho=200.0, friction=0.8),
+            material=gs.materials.Rigid(rho=500.0, friction=1.5),
             morph=gs.morphs.Box(
                 size=cube_size,
                 fixed=env_cfg.get("box_fixed", False),
@@ -105,11 +109,11 @@ class SO101KitchenEnv:
                 diffuse_texture=gs.textures.ColorTexture(color=(0.9, 0.15, 0.1)),
             ),
         )
-        disk_r = env_cfg.get("disk_radius", 0.06)
+        # Pedestal disk: height blocks hit-and-slide; cube must be lifted onto the top face.
         self.disk = self.scene.add_entity(
             gs.morphs.Cylinder(
-                radius=disk_r,
-                height=0.01,
+                radius=self.disk_radius,
+                height=self.disk_height,
                 fixed=True,
             ),
             surface=gs.surfaces.Rough(
@@ -127,7 +131,6 @@ class SO101KitchenEnv:
         self.episode_cam = None
         self.vis_cam = None
         if env_cfg.get("enable_cameras", True):
-            # Single high-res episode camera. Training RGB is downscaled from this view.
             self.episode_cam = self.scene.add_sensor(
                 CameraOptions(
                     res=(self.episode_width, self.episode_height),
@@ -177,6 +180,8 @@ class SO101KitchenEnv:
         self.disk_pos = torch.zeros(self.num_envs, 3, device=gs.device, dtype=gs.tc_float)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, device=gs.device, dtype=gs.tc_float)
         self._is_held = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
+        # Must lift while grasping before a table-slide can count as success.
+        self._did_lift = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
         self.extras = dict()
 
     def _sample_workspace_xy(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -207,8 +212,10 @@ class SO101KitchenEnv:
         cube_xy = cube_pos[:, :2]
 
         dx, dy = self._sample_separated_disk_xy(cube_xy)
+        # Cylinder origin is its center; top face sits at table + disk_height.
+        disk_z = self.table_height + 0.5 * self.disk_height
         disk_pos = torch.stack(
-            [dx, dy, torch.full((self.num_envs,), self.table_height + 0.005, device=self.device)],
+            [dx, dy, torch.full((self.num_envs,), disk_z, device=self.device)],
             dim=-1,
         )
 
@@ -223,6 +230,7 @@ class SO101KitchenEnv:
             self.disk.set_pos(disk_pos, skip_forward=False)
             self.episode_length_buf.zero_()
             self.success_hold_buf.zero_()
+            self._did_lift.zero_()
             self.reset_buf.fill_(True)
         else:
             torch.where(envs_idx[:, None], goal_pose, self.goal_pose, out=self.goal_pose)
@@ -232,6 +240,7 @@ class SO101KitchenEnv:
             self.disk.set_pos(disk_pos, envs_idx=envs_idx, skip_forward=False)
             self.episode_length_buf.masked_fill_(envs_idx, 0)
             self.success_hold_buf.masked_fill_(envs_idx, 0)
+            self._did_lift.masked_fill_(envs_idx, False)
             self.reset_buf.masked_fill_(envs_idx, True)
 
         if self.episode_cam is not None:
@@ -250,7 +259,6 @@ class SO101KitchenEnv:
             else:
                 value.masked_fill_(envs_idx, 0.0)
 
-        # Fraction of resets that completed a held solve (not a brush / timeout).
         if envs_idx is None:
             self.extras["episode"]["success_rate"] = self._is_held.float().mean()
             self.last_actions.zero_()
@@ -270,6 +278,8 @@ class SO101KitchenEnv:
         self.scene.step()
         self.episode_length_buf += 1
 
+        self._did_lift |= self._is_grasping() & self._is_lifted()
+
         is_success = self._success_mask()
         self.success_hold_buf = torch.where(is_success, self.success_hold_buf + 1, torch.zeros_like(self.success_hold_buf))
         is_timeout = self.episode_length_buf > self.max_episode_length
@@ -278,9 +288,7 @@ class SO101KitchenEnv:
 
         self.reset_buf = is_timeout | is_held
         self.reset_buf |= self.scene.rigid_solver.get_error_envs_mask()
-        # Only true timeouts bootstrap values; success-held episodes are real terminals.
         self.extras["time_outs"] = is_timeout.to(dtype=gs.tc_float)
-        # True solve = held on-disk, not a one-frame brush.
         self.extras["success"] = is_held.to(dtype=gs.tc_float)
 
         reward = torch.zeros(self.num_envs, device=gs.device, dtype=gs.tc_float)
@@ -299,7 +307,6 @@ class SO101KitchenEnv:
         )
         target_pos = self.object.get_pos()
         target_quat = self.object.get_quat()
-        # Joint proprio + last action make Δq control an MDP (Cartesian-only obs is not enough).
         self.obs_buf = torch.cat(
             [
                 finger_pos - target_pos,
@@ -339,28 +346,60 @@ class SO101KitchenEnv:
         """Backward-compatible alias for get_rgb_images (single mono view)."""
         return self.get_rgb_images(normalize=normalize)
 
-    def _success_mask(self) -> torch.Tensor:
-        cube_pos = self.object.get_pos()
-        xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        max_z = self.table_height + self.cube_half_z + 0.02
-        return (xy_dist < self.env_cfg.get("disk_radius", 0.06)) & (cube_pos[:, 2] < max_z)
-
-    def _reward_reach(self) -> torch.Tensor:
+    def _finger_cube_dist(self) -> torch.Tensor:
         tip_offset = torch.tensor([0.0, 0.0, -0.02], device=self.device, dtype=gs.tc_float).repeat(self.num_envs, 1)
         finger_tip = self.robot.center_finger_pose[:, :3] + tip_offset
-        dist = torch.norm(finger_tip - self.object.get_pos(), dim=-1)
-        return torch.exp(-8.0 * dist)
+        return torch.norm(finger_tip - self.object.get_pos(), dim=-1)
+
+    def _is_grasping(self) -> torch.Tensor:
+        # Closed-ish jaw near the cube — open jaw does not count as a grasp.
+        closed = self.robot.gripper_openness < 0.45
+        return (self._finger_cube_dist() < self.grasp_dist) & closed
+
+    def _is_lifted(self) -> torch.Tensor:
+        cube_z = self.object.get_pos()[:, 2]
+        return cube_z > (self.table_height + self.cube_half_z + self.lift_height)
+
+    def _is_released(self) -> torch.Tensor:
+        return self.robot.gripper_openness > 0.55
+
+    def _on_disk(self) -> torch.Tensor:
+        cube_pos = self.object.get_pos()
+        xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
+        disk_top = self.table_height + self.disk_height
+        # Resting on the pedestal top (not mid-air, not table height).
+        z_ok = (cube_pos[:, 2] > disk_top + self.cube_half_z - 0.01) & (
+            cube_pos[:, 2] < disk_top + self.cube_half_z + 0.025
+        )
+        return (xy_dist < self.disk_radius) & z_ok
+
+    def _success_mask(self) -> torch.Tensor:
+        # Require a prior lift so hit-and-slide onto the pedestal cannot succeed.
+        return self._on_disk() & self._is_released() & self._did_lift
+
+    def _reward_reach(self) -> torch.Tensor:
+        return torch.exp(-8.0 * self._finger_cube_dist())
+
+    def _reward_grasp(self) -> torch.Tensor:
+        near = torch.exp(-20.0 * self._finger_cube_dist())
+        closed = (1.0 - self.robot.gripper_openness).clamp(0.0, 1.0)
+        return near * closed
+
+    def _reward_lift(self) -> torch.Tensor:
+        cube_z = self.object.get_pos()[:, 2]
+        height = (cube_z - (self.table_height + self.cube_half_z)).clamp(min=0.0)
+        # Only reward height while grasping so the policy cannot kick the cube upward.
+        return self._is_grasping().to(dtype=gs.tc_float) * (height / 0.08).clamp(0.0, 1.0)
 
     def _reward_place(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        max_z = self.table_height + self.cube_half_z + 0.05
-        is_low = (cube_pos[:, 2] < max_z).to(dtype=gs.tc_float)
-        # Longer-range kernel so joint pushes get place credit before the disk edge.
-        return torch.exp(-10.0 * xy_dist) * (0.25 + 0.75 * is_low)
+        disk_top = self.table_height + self.disk_height
+        # Prefer approaching the disk while elevated (carrying), then lowering onto it.
+        above = (cube_pos[:, 2] > disk_top).to(dtype=gs.tc_float)
+        return torch.exp(-8.0 * xy_dist) * (0.35 + 0.65 * above) * self._did_lift.to(dtype=gs.tc_float)
 
     def _reward_success(self) -> torch.Tensor:
-        # One-shot bonus when the hold completes (true solve), not every brush frame.
         return self._is_held.to(dtype=gs.tc_float)
 
     def is_task_success(self) -> torch.Tensor:

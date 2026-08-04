@@ -20,7 +20,7 @@ Layout and ROCm Docker follow the spirit of
 
 **Cameras:** one high-res **episode** camera (1280×960). Training downscales to 256×256.
 
-**Actions:** joint-space arm deltas (5-D); gripper pinned open for push-and-place.
+**Actions:** joint-space arm deltas + gripper (6-D) for pick-and-place onto a raised disk.
 
 ## Quickstart (local / cloud VM)
 
