@@ -39,12 +39,12 @@ class SO101Manipulator:
         self._init()
 
     def set_pd_gains(self) -> None:
-        # STS3215-tuned gains from the MJCF; slightly stiffened for position tracking.
-        kp = torch.tensor([40.0, 40.0, 40.0, 30.0, 20.0, 20.0], device=self._device)
-        kv = torch.tensor([2.0, 2.0, 2.0, 1.5, 1.0, 1.0], device=self._device)
+        # STS3215-tuned gains from the MJCF; stiffened + higher force limit so the arm can push the cube.
+        kp = torch.tensor([50.0, 50.0, 50.0, 40.0, 25.0, 25.0], device=self._device)
+        kv = torch.tensor([2.5, 2.5, 2.5, 2.0, 1.2, 1.2], device=self._device)
         self._robot_entity.set_dofs_kp(kp)
         self._robot_entity.set_dofs_kv(kv)
-        force = torch.tensor([3.35, 3.35, 3.35, 3.35, 3.35, 3.35], device=self._device)
+        force = torch.tensor([8.0, 8.0, 8.0, 5.0, 4.0, 4.0], device=self._device)
         self._robot_entity.set_dofs_force_range(-force, force)
 
     def _init(self) -> None:

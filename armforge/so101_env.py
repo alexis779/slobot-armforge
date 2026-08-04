@@ -82,7 +82,8 @@ class SO101KitchenEnv:
         cube_size = env_cfg.get("box_size", [0.03, 0.03, 0.03])
         # Default free: a fixed cube cannot be placed, so place/success would only reflect spawn luck.
         self.object = self.scene.add_entity(
-            gs.morphs.Box(
+            material=gs.materials.Rigid(rho=200.0, friction=1.2),
+            morph=gs.morphs.Box(
                 size=cube_size,
                 fixed=env_cfg.get("box_fixed", False),
                 batch_fixed_verts=True,
@@ -197,8 +198,8 @@ class SO101KitchenEnv:
         if envs_idx is None:
             self.goal_pose.copy_(goal_pose)
             self.disk_pos.copy_(disk_pos)
-            self.object.set_pos(cube_pos, skip_forward=True)
-            self.object.set_quat(q_identity, skip_forward=True)
+            self.object.set_pos(cube_pos, zero_velocity=True, skip_forward=True)
+            self.object.set_quat(q_identity, zero_velocity=True, skip_forward=True)
             self.disk.set_pos(disk_pos, skip_forward=False)
             self.episode_length_buf.zero_()
             self.success_hold_buf.zero_()
@@ -206,8 +207,8 @@ class SO101KitchenEnv:
         else:
             torch.where(envs_idx[:, None], goal_pose, self.goal_pose, out=self.goal_pose)
             torch.where(envs_idx[:, None], disk_pos, self.disk_pos, out=self.disk_pos)
-            self.object.set_pos(cube_pos, envs_idx=envs_idx, skip_forward=True)
-            self.object.set_quat(q_identity, envs_idx=envs_idx, skip_forward=True)
+            self.object.set_pos(cube_pos, envs_idx=envs_idx, zero_velocity=True, skip_forward=True)
+            self.object.set_quat(q_identity, envs_idx=envs_idx, zero_velocity=True, skip_forward=True)
             self.disk.set_pos(disk_pos, envs_idx=envs_idx, skip_forward=False)
             self.episode_length_buf.masked_fill_(envs_idx, 0)
             self.success_hold_buf.masked_fill_(envs_idx, 0)
