@@ -95,7 +95,7 @@ class SO101KitchenEnv:
         self.cube_half_z = 0.5 * float(cube_size[2])
         # Default free: a fixed cube cannot be placed, so place/success would only reflect spawn luck.
         self.object = self.scene.add_entity(
-            material=gs.materials.Rigid(rho=200.0, friction=1.2),
+            material=gs.materials.Rigid(rho=200.0, friction=0.8),
             morph=gs.morphs.Box(
                 size=cube_size,
                 fixed=env_cfg.get("box_fixed", False),
@@ -160,7 +160,9 @@ class SO101KitchenEnv:
 
         self.reward_functions, self.episode_sums = dict(), dict()
         for name in self.reward_scales.keys():
-            self.reward_scales[name] *= self.ctrl_dt
+            # Dense terms are rates (× dt); success is a one-shot held-solve bonus.
+            if name != "success":
+                self.reward_scales[name] *= self.ctrl_dt
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_float)
 
@@ -173,6 +175,8 @@ class SO101KitchenEnv:
         self.success_hold_buf = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_int)
         self.goal_pose = torch.zeros(self.num_envs, 7, device=gs.device, dtype=gs.tc_float)
         self.disk_pos = torch.zeros(self.num_envs, 3, device=gs.device, dtype=gs.tc_float)
+        self.last_actions = torch.zeros(self.num_envs, self.num_actions, device=gs.device, dtype=gs.tc_float)
+        self._is_held = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
         self.extras = dict()
 
     def _sample_workspace_xy(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -184,7 +188,7 @@ class SO101KitchenEnv:
         """Sample disk XY at least min_cube_disk_sep from the cube so success is not free at spawn."""
         dx, dy = self._sample_workspace_xy()
         disk_xy = torch.stack([dx + 0.05, dy], dim=-1)
-        for _ in range(8):
+        for _ in range(40):
             sep = torch.norm(disk_xy - cube_xy, dim=-1)
             is_too_close = sep < self.min_cube_disk_sep
             if not is_too_close.any():
@@ -246,12 +250,22 @@ class SO101KitchenEnv:
             else:
                 value.masked_fill_(envs_idx, 0.0)
 
+        # Fraction of resets that completed a held solve (not a brush / timeout).
+        if envs_idx is None:
+            self.extras["episode"]["success_rate"] = self._is_held.float().mean()
+            self.last_actions.zero_()
+        else:
+            n = n_envs.clamp(min=1).to(dtype=gs.tc_float)
+            self.extras["episode"]["success_rate"] = (self._is_held & envs_idx).sum().to(dtype=gs.tc_float) / n
+            self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
+
     def reset(self) -> TensorDict:
         self._reset_idx()
         return self.get_observations()
 
     def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
         actions = self.rescale_action(actions)
+        self.last_actions.copy_(actions)
         self.robot.apply_action(actions)
         self.scene.step()
         self.episode_length_buf += 1
@@ -260,12 +274,14 @@ class SO101KitchenEnv:
         self.success_hold_buf = torch.where(is_success, self.success_hold_buf + 1, torch.zeros_like(self.success_hold_buf))
         is_timeout = self.episode_length_buf > self.max_episode_length
         is_held = self.success_hold_buf >= self.success_hold_steps
+        self._is_held = is_held
 
         self.reset_buf = is_timeout | is_held
         self.reset_buf |= self.scene.rigid_solver.get_error_envs_mask()
         # Only true timeouts bootstrap values; success-held episodes are real terminals.
         self.extras["time_outs"] = is_timeout.to(dtype=gs.tc_float)
-        self.extras["success"] = is_success.to(dtype=gs.tc_float)
+        # True solve = held on-disk, not a one-frame brush.
+        self.extras["success"] = is_held.to(dtype=gs.tc_float)
 
         reward = torch.zeros(self.num_envs, device=gs.device, dtype=gs.tc_float)
         for name, reward_func in self.reward_functions.items():
@@ -283,7 +299,7 @@ class SO101KitchenEnv:
         )
         target_pos = self.object.get_pos()
         target_quat = self.object.get_quat()
-        # Disk pose is required for place; without it the policy cannot know the goal.
+        # Joint proprio + last action make Δq control an MDP (Cartesian-only obs is not enough).
         self.obs_buf = torch.cat(
             [
                 finger_pos - target_pos,
@@ -292,6 +308,8 @@ class SO101KitchenEnv:
                 target_quat,
                 target_pos - self.disk_pos,
                 self.disk_pos,
+                self.robot.qpos,
+                self.last_actions,
             ],
             dim=-1,
         )
@@ -324,7 +342,7 @@ class SO101KitchenEnv:
     def _success_mask(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        max_z = self.table_height + self.cube_half_z + 0.04
+        max_z = self.table_height + self.cube_half_z + 0.02
         return (xy_dist < self.env_cfg.get("disk_radius", 0.06)) & (cube_pos[:, 2] < max_z)
 
     def _reward_reach(self) -> torch.Tensor:
@@ -338,13 +356,12 @@ class SO101KitchenEnv:
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
         max_z = self.table_height + self.cube_half_z + 0.05
         is_low = (cube_pos[:, 2] < max_z).to(dtype=gs.tc_float)
-        # Sharp near-disk kernel so place credit only arrives close to success.
-        return torch.exp(-25.0 * xy_dist) * (0.25 + 0.75 * is_low)
+        # Longer-range kernel so joint pushes get place credit before the disk edge.
+        return torch.exp(-10.0 * xy_dist) * (0.25 + 0.75 * is_low)
 
     def _reward_success(self) -> torch.Tensor:
-        # Sparse: only credit while the cube is on-disk (and held until episode end).
-        # Scale in configs makes a short hold outweigh a full episode of place farming.
-        return self._success_mask().to(dtype=gs.tc_float)
+        # One-shot bonus when the hold completes (true solve), not every brush frame.
+        return self._is_held.to(dtype=gs.tc_float)
 
     def is_task_success(self) -> torch.Tensor:
         return self._success_mask()

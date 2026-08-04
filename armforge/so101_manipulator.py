@@ -1,4 +1,4 @@
-"""SO-ARM-101 manipulator with joint-space arm deltas + gripper control."""
+"""SO-ARM-101 manipulator with joint-space arm delta control (gripper pinned open)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from assets import so101_mjcf_path
 
 
 class SO101Manipulator:
-    """5-DoF arm + 1-DoF gripper controlled via joint deltas (no IK)."""
+    """5-DoF arm controlled via joint deltas; gripper stays open for push tasks."""
 
     def __init__(self, num_envs: int, scene: gs.Scene, args: dict, device: str = "cpu"):
         self._device = device
@@ -65,12 +65,11 @@ class SO101Manipulator:
         )
 
     def apply_action(self, action: torch.Tensor) -> None:
-        """Apply scaled joint deltas (5) + gripper command (1)."""
+        """Apply scaled arm joint deltas; keep gripper open so jaw chatter cannot break holds."""
         q_pos = self._robot_entity.get_qpos().clone()
-        q_pos[:, : self._arm_dof_dim] = q_pos[:, : self._arm_dof_dim] + action[:, : self._arm_dof_dim]
-        grip_cmd = action[:, self._arm_dof_dim]
-        grip = 0.5 * (grip_cmd + 1.0) * (self._gripper_open_dof - self._gripper_close_dof) + self._gripper_close_dof
-        q_pos[:, self._gripper_dof] = grip.unsqueeze(-1)
+        n_arm = min(action.shape[-1], self._arm_dof_dim)
+        q_pos[:, :n_arm] = q_pos[:, :n_arm] + action[:, :n_arm]
+        q_pos[:, self._gripper_dof] = self._gripper_open_dof
         self._robot_entity.control_dofs_position(position=q_pos)
 
     @property

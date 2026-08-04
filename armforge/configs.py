@@ -26,7 +26,7 @@ def get_train_cfg(exp_name: str):
             "activation": "relu",
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
-                "init_std": 0.8,
+                "init_std": 0.5,
                 "std_type": "scalar",
             },
         },
@@ -80,10 +80,9 @@ def get_train_cfg(exp_name: str):
 def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
-        # Joint space: 5 arm deltas + gripper (avoids IK failures that stall EE PPO).
-        "num_actions": 6,
-        # Per-step joint deltas (rad) + gripper; slightly larger so contact/push is reachable.
-        "action_scales": [0.08, 0.08, 0.08, 0.08, 0.08, 1.0],
+        # Arm joint deltas only; gripper is pinned open in the manipulator.
+        "num_actions": 5,
+        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05],
         "episode_length_s": 6.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
@@ -91,21 +90,20 @@ def get_task_cfgs(task: str = "cube_disk"):
         "box_fixed": False,
         # Raised tabletop: floor-height cubes sit below the gripper frame reach envelope.
         "table_height": 0.10,
-        "disk_radius": 0.06,
-        # Short hold so sparse success credit arrives quickly once on-disk.
+        # Wider disk + larger spawn sep so random brushes are rare and real pushes matter.
+        "disk_radius": 0.08,
         "success_hold_s": 0.2,
-        "min_cube_disk_sep": 0.065,
+        "min_cube_disk_sep": 0.12,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
         "task": task,
     }
-    # Dense shaping stays weak so success (not reach/place farming) drives learning.
-    # Scales are later multiplied by ctrl_dt; success must dominate a full-episode place farm.
+    # Dense shaping guides the push; success is a one-shot bonus (not × ctrl_dt).
     reward_scales = {
-        "reach": 0.2,
-        "place": 1.0,
-        "success": 80.0,
+        "reach": 0.3,
+        "place": 2.0,
+        "success": 20.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",
