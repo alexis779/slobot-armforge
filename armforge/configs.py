@@ -9,7 +9,7 @@ def get_train_cfg(exp_name: str):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.0,
+            "entropy_coef": 0.005,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.0003,
@@ -82,8 +82,8 @@ def get_task_cfgs(task: str = "cube_disk"):
         "num_envs": 10,
         # Joint space: 5 arm deltas + gripper (avoids IK failures that stall EE PPO).
         "num_actions": 6,
-        # Per-step joint deltas (rad) + gripper scale in [-1, 1].
-        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05, 1.0],
+        # Per-step joint deltas (rad) + gripper; slightly larger so contact/push is reachable.
+        "action_scales": [0.08, 0.08, 0.08, 0.08, 0.08, 1.0],
         "episode_length_s": 6.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
@@ -92,19 +92,20 @@ def get_task_cfgs(task: str = "cube_disk"):
         # Raised tabletop: floor-height cubes sit below the gripper frame reach envelope.
         "table_height": 0.10,
         "disk_radius": 0.06,
-        # Require success to hold before episode end so credit is not diluted by wander.
-        "success_hold_s": 0.3,
+        # Short hold so sparse success credit arrives quickly once on-disk.
+        "success_hold_s": 0.2,
         "min_cube_disk_sep": 0.065,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
         "task": task,
     }
-    # Dense reach/place shaping + strong success; scales are later multiplied by ctrl_dt.
+    # Dense shaping stays weak so success (not reach/place farming) drives learning.
+    # Scales are later multiplied by ctrl_dt; success must dominate a full-episode place farm.
     reward_scales = {
-        "reach": 0.5,
-        "place": 3.0,
-        "success": 12.0,
+        "reach": 0.2,
+        "place": 1.0,
+        "success": 80.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",
@@ -112,9 +113,6 @@ def get_task_cfgs(task: str = "cube_disk"):
         # Home pose aimed at the raised tabletop (gripper ~ table height).
         "default_arm_dof": [0.0, -1.2, 1.5, 1.2, 0.0],
         "default_gripper_dof": [1.7],
-        # "joint" skips IK; set "ee" + ik_method for Cartesian deltas.
-        "control_mode": "joint",
-        "ik_method": "dls_ik",
         "gripper_open": 1.7,
         "gripper_close": 0.0,
     }

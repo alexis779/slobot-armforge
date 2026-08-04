@@ -23,7 +23,7 @@ except ImportError:
 
 
 class SO101KitchenEnv:
-    """Gym-style parallel env: place a cube on a disk with SO-101 joint/EE control."""
+    """Gym-style parallel env: place a cube on a disk with SO-101 joint-space control."""
 
     def __init__(
         self,
@@ -342,6 +342,8 @@ class SO101KitchenEnv:
         return torch.exp(-25.0 * xy_dist) * (0.25 + 0.75 * is_low)
 
     def _reward_success(self) -> torch.Tensor:
+        # Sparse: only credit while the cube is on-disk (and held until episode end).
+        # Scale in configs makes a short hold outweigh a full episode of place farming.
         return self._success_mask().to(dtype=gs.tc_float)
 
     def is_task_success(self) -> torch.Tensor:
