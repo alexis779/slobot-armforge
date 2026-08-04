@@ -298,7 +298,7 @@ class SO101KitchenEnv:
         return TensorDict({"policy": self.obs_buf}, batch_size=[self.num_envs])
 
     def rescale_action(self, action: torch.Tensor) -> torch.Tensor:
-        return action * self.action_scales
+        return torch.clamp(action, -1.0, 1.0) * self.action_scales
 
     def get_rgb_images(self, normalize: bool = True) -> torch.Tensor:
         """High-res episode camera, downscaled to training resolution. Shape (B, 3, H, W)."""
@@ -338,7 +338,8 @@ class SO101KitchenEnv:
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
         max_z = self.table_height + self.cube_half_z + 0.05
         is_low = (cube_pos[:, 2] < max_z).to(dtype=gs.tc_float)
-        return torch.exp(-12.0 * xy_dist) * (0.5 + 0.5 * is_low)
+        # Sharp near-disk kernel so place credit only arrives close to success.
+        return torch.exp(-25.0 * xy_dist) * (0.25 + 0.75 * is_low)
 
     def _reward_success(self) -> torch.Tensor:
         return self._success_mask().to(dtype=gs.tc_float)

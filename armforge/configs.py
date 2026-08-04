@@ -9,7 +9,7 @@ def get_train_cfg(exp_name: str):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.01,
+            "entropy_coef": 0.0,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.0003,
@@ -26,7 +26,7 @@ def get_train_cfg(exp_name: str):
             "activation": "relu",
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
-                "init_std": 1.0,
+                "init_std": 0.8,
                 "std_type": "scalar",
             },
         },
@@ -92,8 +92,8 @@ def get_task_cfgs(task: str = "cube_disk"):
         "table_height": 0.10,
         "disk_radius": 0.06,
         # Require success to hold before episode end so credit is not diluted by wander.
-        "success_hold_s": 0.4,
-        "min_cube_disk_sep": 0.07,
+        "success_hold_s": 0.3,
+        "min_cube_disk_sep": 0.065,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
@@ -101,9 +101,9 @@ def get_task_cfgs(task: str = "cube_disk"):
     }
     # Dense reach/place shaping + strong success; scales are later multiplied by ctrl_dt.
     reward_scales = {
-        "reach": 1.0,
-        "place": 2.0,
-        "success": 8.0,
+        "reach": 0.5,
+        "place": 3.0,
+        "success": 12.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",
