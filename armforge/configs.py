@@ -9,7 +9,7 @@ def get_train_cfg(exp_name: str):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.005,
+            "entropy_coef": 0.0,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.0003,

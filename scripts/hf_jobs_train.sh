@@ -18,7 +18,7 @@ N_ENVS="${N_ENVS:-256}"
 TIMEOUT="${TIMEOUT:-3h}"
 IMAGE="${IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime}"
 REPO_URL="${REPO_URL:-https://github.com/alexis779/slobot-armforge.git}"
-EXP_NAME="${EXP_NAME:-armforge_so101_hf_joint_v2}"
+EXP_NAME="${EXP_NAME:-armforge_so101_hf_joint_v3}"
 HUB_REPO="${HUB_REPO:-armforge-so101-rl-joint}"
 
 echo "[hf-jobs] flavor=$FLAVOR iters=$ITERS n_envs=$N_ENVS timeout=$TIMEOUT"
