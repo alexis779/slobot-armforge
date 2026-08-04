@@ -20,7 +20,7 @@ Layout and ROCm Docker follow the spirit of
 
 **Cameras:** one high-res **episode** camera (1280×960). Training downscales to 256×256.
 
-**Actions:** Cartesian EE delta + gripper (7-D) via DLS IK.
+**Actions:** joint-space arm deltas + gripper (6-D). Set `robot_cfg["control_mode"]="ee"` for Cartesian EE + DLS IK.
 
 ## Quickstart (local / cloud VM)
 

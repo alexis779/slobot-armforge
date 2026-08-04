@@ -80,9 +80,10 @@ def get_train_cfg(exp_name: str):
 def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
-        "num_actions": 7,
-        # Cartesian EE deltas; SO-101 workspace is small so keep steps moderate.
-        "action_scales": [0.025, 0.025, 0.025, 0.05, 0.05, 0.05, 1.0],
+        # Joint space: 5 arm deltas + gripper (avoids IK failures that stall EE PPO).
+        "num_actions": 6,
+        # Per-step joint deltas (rad) + gripper scale in [-1, 1].
+        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05, 1.0],
         "episode_length_s": 6.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
@@ -111,6 +112,8 @@ def get_task_cfgs(task: str = "cube_disk"):
         # Home pose aimed at the raised tabletop (gripper ~ table height).
         "default_arm_dof": [0.0, -1.2, 1.5, 1.2, 0.0],
         "default_gripper_dof": [1.7],
+        # "joint" skips IK; set "ee" + ik_method for Cartesian deltas.
+        "control_mode": "joint",
         "ik_method": "dls_ik",
         "gripper_open": 1.7,
         "gripper_close": 0.0,

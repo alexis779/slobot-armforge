@@ -23,7 +23,7 @@ except ImportError:
 
 
 class SO101KitchenEnv:
-    """Gym-style parallel env: place a cube on a disk with Cartesian SO-101 control."""
+    """Gym-style parallel env: place a cube on a disk with SO-101 joint/EE control."""
 
     def __init__(
         self,

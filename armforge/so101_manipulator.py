@@ -1,4 +1,4 @@
-"""SO-ARM-101 manipulator with Cartesian EE delta + gripper control."""
+"""SO-ARM-101 manipulator with joint-space or Cartesian EE + gripper control."""
 
 from __future__ import annotations
 
@@ -13,7 +13,11 @@ from assets import so101_mjcf_path
 
 
 class SO101Manipulator:
-    """5-DoF arm + 1-DoF gripper controlled via damped-least-squares IK."""
+    """5-DoF arm + 1-DoF gripper.
+
+    Default ``control_mode="joint"`` applies arm joint deltas + gripper directly
+    (no IK). ``control_mode="ee"`` keeps Cartesian deltas via DLS / Genesis IK.
+    """
 
     def __init__(self, num_envs: int, scene: gs.Scene, args: dict, device: str = "cpu"):
         self._device = device
@@ -35,6 +39,7 @@ class SO101Manipulator:
         # Gripper hinge: closed near lower bound, open near upper bound (MJCF range).
         self._gripper_open_dof = float(args.get("gripper_open", 1.7))
         self._gripper_close_dof = float(args.get("gripper_close", 0.0))
+        self._control_mode: Literal["joint", "ee"] = args.get("control_mode", "joint")
         self._ik_method: Literal["gs_ik", "dls_ik"] = args.get("ik_method", "dls_ik")
         self._init()
 
@@ -73,20 +78,31 @@ class SO101Manipulator:
         )
 
     def apply_action(self, action: torch.Tensor) -> None:
-        """Apply Cartesian EE delta (6) + gripper command (1) in [-1, 1]."""
-        ee_delta = action[:, :6]
-        grip_cmd = action[:, 6]
-
-        if self._ik_method == "gs_ik":
-            q_pos = self._gs_ik(ee_delta)
-        elif self._ik_method == "dls_ik":
-            q_pos = self._dls_ik(ee_delta)
+        """Apply scaled action: joint deltas (5) + gripper, or EE deltas (6) + gripper."""
+        if self._control_mode == "joint":
+            q_pos = self._joint_delta(action[:, : self._arm_dof_dim])
+            grip_cmd = action[:, self._arm_dof_dim]
+        elif self._control_mode == "ee":
+            ee_delta = action[:, :6]
+            grip_cmd = action[:, 6]
+            if self._ik_method == "gs_ik":
+                q_pos = self._gs_ik(ee_delta)
+            elif self._ik_method == "dls_ik":
+                q_pos = self._dls_ik(ee_delta)
+            else:
+                raise ValueError(f"Invalid IK method: {self._ik_method}")
         else:
-            raise ValueError(f"Invalid IK method: {self._ik_method}")
+            raise ValueError(f"Invalid control mode: {self._control_mode}")
 
         grip = 0.5 * (grip_cmd + 1.0) * (self._gripper_open_dof - self._gripper_close_dof) + self._gripper_close_dof
         q_pos[:, self._gripper_dof] = grip.unsqueeze(-1)
         self._robot_entity.control_dofs_position(position=q_pos)
+
+    def _joint_delta(self, delta_q: torch.Tensor) -> torch.Tensor:
+        """Add arm joint deltas to current qpos (no IK)."""
+        q = self._robot_entity.get_qpos().clone()
+        q[:, : self._arm_dof_dim] = q[:, : self._arm_dof_dim] + delta_q
+        return q
 
     def _gs_ik(self, action: torch.Tensor) -> torch.Tensor:
         delta_position = action[:, :3]
