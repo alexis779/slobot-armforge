@@ -9,7 +9,7 @@ def get_train_cfg(exp_name: str):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.0,
+            "entropy_coef": 0.01,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.0003,
@@ -81,20 +81,27 @@ def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
         "num_actions": 7,
-        "action_scales": [0.02, 0.02, 0.02, 0.05, 0.05, 0.05, 1.0],
-        "episode_length_s": 4.0,
+        # Slightly larger Cartesian steps so the short SO-101 can cover the workspace.
+        "action_scales": [0.03, 0.03, 0.03, 0.06, 0.06, 0.06, 1.0],
+        "episode_length_s": 6.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
-        "disk_radius": 0.04,
+        # Must be free so the policy can push / place the cube (eval already forced False).
+        "box_fixed": False,
+        "disk_radius": 0.05,
+        # Require success to hold before episode end so credit is not diluted by wander.
+        "success_hold_s": 0.4,
+        "min_cube_disk_sep": 0.08,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
         "task": task,
     }
+    # Dense reach/place shaping + strong success; scales are later multiplied by ctrl_dt.
     reward_scales = {
-        "keypoints": 1.0,
-        "place": 0.5,
-        "success": 2.0,
+        "reach": 1.0,
+        "place": 2.0,
+        "success": 8.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",

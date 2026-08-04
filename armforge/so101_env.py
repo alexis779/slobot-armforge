@@ -11,7 +11,6 @@ from tensordict import TensorDict
 
 import genesis as gs
 from genesis.options.sensors import BatchRendererCameraOptions, RasterizerCameraOptions
-from genesis.utils.geom import transform_by_trans_quat
 
 from so101_manipulator import SO101Manipulator
 
@@ -40,6 +39,8 @@ class SO101KitchenEnv:
 
         self.ctrl_dt = env_cfg["ctrl_dt"]
         self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.ctrl_dt)
+        self.success_hold_steps = max(1, math.ceil(env_cfg.get("success_hold_s", 0.4) / self.ctrl_dt))
+        self.min_cube_disk_sep = float(env_cfg.get("min_cube_disk_sep", 0.08))
         self.env_cfg = env_cfg
         self.reward_scales = dict(reward_cfg)
         self.action_scales = torch.tensor(env_cfg["action_scales"], device=self.device)
@@ -79,17 +80,18 @@ class SO101KitchenEnv:
         )
 
         cube_size = env_cfg.get("box_size", [0.03, 0.03, 0.03])
+        # Default free: a fixed cube cannot be placed, so place/success would only reflect spawn luck.
         self.object = self.scene.add_entity(
             gs.morphs.Box(
                 size=cube_size,
-                fixed=env_cfg.get("box_fixed", True),
+                fixed=env_cfg.get("box_fixed", False),
                 batch_fixed_verts=True,
             ),
             surface=gs.surfaces.Rough(
                 diffuse_texture=gs.textures.ColorTexture(color=(0.9, 0.15, 0.1)),
             ),
         )
-        disk_r = env_cfg.get("disk_radius", 0.04)
+        disk_r = env_cfg.get("disk_radius", 0.05)
         self.disk = self.scene.add_entity(
             gs.morphs.Cylinder(
                 radius=disk_r,
@@ -148,13 +150,13 @@ class SO101KitchenEnv:
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_float)
 
-        self.keypoints_offset = self.get_keypoint_offsets(batch_size=self.num_envs, device=self.device, unit_length=0.04)
         self._init_buffers()
         self.reset()
 
     def _init_buffers(self) -> None:
         self.episode_length_buf = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_int)
         self.reset_buf = torch.ones(self.num_envs, dtype=gs.tc_bool, device=gs.device)
+        self.success_hold_buf = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_int)
         self.goal_pose = torch.zeros(self.num_envs, 7, device=gs.device, dtype=gs.tc_float)
         self.disk_pos = torch.zeros(self.num_envs, 3, device=gs.device, dtype=gs.tc_float)
         self.extras = dict()
@@ -164,15 +166,30 @@ class SO101KitchenEnv:
         y = (torch.rand(self.num_envs, device=self.device) - 0.5) * 0.16
         return x, y
 
+    def _sample_separated_disk_xy(self, cube_xy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample disk XY at least min_cube_disk_sep from the cube so success is not free at spawn."""
+        dx, dy = self._sample_workspace_xy()
+        disk_xy = torch.stack([dx + 0.05, dy], dim=-1)
+        for _ in range(8):
+            sep = torch.norm(disk_xy - cube_xy, dim=-1)
+            is_too_close = sep < self.min_cube_disk_sep
+            if not is_too_close.any():
+                break
+            rdx, rdy = self._sample_workspace_xy()
+            resample = torch.stack([rdx + 0.05, rdy], dim=-1)
+            disk_xy = torch.where(is_too_close[:, None], resample, disk_xy)
+        return disk_xy[:, 0], disk_xy[:, 1]
+
     def _reset_idx(self, envs_idx=None) -> None:
         self.robot.reset(envs_idx)
 
         x, y = self._sample_workspace_xy()
         z = torch.full((self.num_envs,), 0.02, device=self.device)
         cube_pos = torch.stack([x, y, z], dim=-1)
+        cube_xy = cube_pos[:, :2]
 
-        dx, dy = self._sample_workspace_xy()
-        disk_pos = torch.stack([dx + 0.05, dy, torch.full((self.num_envs,), 0.005, device=self.device)], dim=-1)
+        dx, dy = self._sample_separated_disk_xy(cube_xy)
+        disk_pos = torch.stack([dx, dy, torch.full((self.num_envs,), 0.005, device=self.device)], dim=-1)
 
         q_identity = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
         goal_pose = torch.cat([cube_pos, q_identity], dim=-1)
@@ -184,6 +201,7 @@ class SO101KitchenEnv:
             self.object.set_quat(q_identity, skip_forward=True)
             self.disk.set_pos(disk_pos, skip_forward=False)
             self.episode_length_buf.zero_()
+            self.success_hold_buf.zero_()
             self.reset_buf.fill_(True)
         else:
             torch.where(envs_idx[:, None], goal_pose, self.goal_pose, out=self.goal_pose)
@@ -192,6 +210,7 @@ class SO101KitchenEnv:
             self.object.set_quat(q_identity, envs_idx=envs_idx, skip_forward=True)
             self.disk.set_pos(disk_pos, envs_idx=envs_idx, skip_forward=False)
             self.episode_length_buf.masked_fill_(envs_idx, 0)
+            self.success_hold_buf.masked_fill_(envs_idx, 0)
             self.reset_buf.masked_fill_(envs_idx, True)
 
         if self.episode_cam is not None:
@@ -220,10 +239,16 @@ class SO101KitchenEnv:
         self.scene.step()
         self.episode_length_buf += 1
 
-        self.reset_buf = self.episode_length_buf > self.max_episode_length
+        is_success = self._success_mask()
+        self.success_hold_buf = torch.where(is_success, self.success_hold_buf + 1, torch.zeros_like(self.success_hold_buf))
+        is_timeout = self.episode_length_buf > self.max_episode_length
+        is_held = self.success_hold_buf >= self.success_hold_steps
+
+        self.reset_buf = is_timeout | is_held
         self.reset_buf |= self.scene.rigid_solver.get_error_envs_mask()
-        self.extras["time_outs"] = (self.episode_length_buf > self.max_episode_length).to(dtype=gs.tc_float)
-        self.extras["success"] = self._success_mask().to(dtype=gs.tc_float)
+        # Only true timeouts bootstrap values; success-held episodes are real terminals.
+        self.extras["time_outs"] = is_timeout.to(dtype=gs.tc_float)
+        self.extras["success"] = is_success.to(dtype=gs.tc_float)
 
         reward = torch.zeros(self.num_envs, device=gs.device, dtype=gs.tc_float)
         for name, reward_func in self.reward_functions.items():
@@ -241,12 +266,15 @@ class SO101KitchenEnv:
         )
         target_pos = self.object.get_pos()
         target_quat = self.object.get_quat()
+        # Disk pose is required for place; without it the policy cannot know the goal.
         self.obs_buf = torch.cat(
             [
                 finger_pos - target_pos,
                 finger_quat,
                 target_pos,
                 target_quat,
+                target_pos - self.disk_pos,
+                self.disk_pos,
             ],
             dim=-1,
         )
@@ -279,54 +307,23 @@ class SO101KitchenEnv:
     def _success_mask(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        return (xy_dist < self.env_cfg.get("disk_radius", 0.04)) & (cube_pos[:, 2] < 0.06)
+        return (xy_dist < self.env_cfg.get("disk_radius", 0.05)) & (cube_pos[:, 2] < 0.06)
 
-    def _reward_keypoints(self) -> torch.Tensor:
+    def _reward_reach(self) -> torch.Tensor:
         tip_offset = torch.tensor([0.0, 0.0, -0.02], device=self.device, dtype=gs.tc_float).repeat(self.num_envs, 1)
-        finger_pos_keypoints = self._to_world_frame(
-            self.robot.center_finger_pose[:, :3] + tip_offset,
-            self.robot.center_finger_pose[:, 3:7],
-            self.keypoints_offset,
-        )
-        object_pos_keypoints = self._to_world_frame(
-            self.object.get_pos(),
-            self.object.get_quat(),
-            self.keypoints_offset,
-        )
-        dist = torch.norm(finger_pos_keypoints - object_pos_keypoints, p=2, dim=-1).sum(-1)
+        finger_tip = self.robot.center_finger_pose[:, :3] + tip_offset
+        dist = torch.norm(finger_tip - self.object.get_pos(), dim=-1)
         return torch.exp(-8.0 * dist)
 
     def _reward_place(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        return torch.exp(-20.0 * xy_dist) * (cube_pos[:, 2] < 0.08).to(gs.tc_float)
+        # Always shape XY progress; boost when the cube is near table height (pushed, not airborne).
+        is_low = (cube_pos[:, 2] < 0.08).to(dtype=gs.tc_float)
+        return torch.exp(-12.0 * xy_dist) * (0.5 + 0.5 * is_low)
 
     def _reward_success(self) -> torch.Tensor:
         return self._success_mask().to(dtype=gs.tc_float)
-
-    @staticmethod
-    def _to_world_frame(position, quaternion, keypoints_offset):
-        return transform_by_trans_quat(keypoints_offset, position.unsqueeze(1), quaternion.unsqueeze(1))
-
-    @staticmethod
-    def get_keypoint_offsets(batch_size: int, device: str, unit_length: float = 0.04) -> torch.Tensor:
-        keypoint_offsets = (
-            torch.tensor(
-                [
-                    [0, 0, 0],
-                    [-1.0, 0, 0],
-                    [1.0, 0, 0],
-                    [0, -1.0, 0],
-                    [0, 1.0, 0],
-                    [0, 0, -1.0],
-                    [0, 0, 1.0],
-                ],
-                device=device,
-                dtype=torch.float32,
-            )
-            * unit_length
-        )
-        return keypoint_offsets[None].repeat((batch_size, 1, 1))
 
     def is_task_success(self) -> torch.Tensor:
         return self._success_mask()
