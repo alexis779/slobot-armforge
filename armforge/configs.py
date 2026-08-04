@@ -81,17 +81,19 @@ def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
         "num_actions": 7,
-        # Slightly larger Cartesian steps so the short SO-101 can cover the workspace.
-        "action_scales": [0.03, 0.03, 0.03, 0.06, 0.06, 0.06, 1.0],
+        # Cartesian EE deltas; SO-101 workspace is small so keep steps moderate.
+        "action_scales": [0.025, 0.025, 0.025, 0.05, 0.05, 0.05, 1.0],
         "episode_length_s": 6.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
         # Must be free so the policy can push / place the cube (eval already forced False).
         "box_fixed": False,
-        "disk_radius": 0.05,
+        # Raised tabletop: floor-height cubes sit below the gripper frame reach envelope.
+        "table_height": 0.10,
+        "disk_radius": 0.06,
         # Require success to hold before episode end so credit is not diluted by wander.
         "success_hold_s": 0.4,
-        "min_cube_disk_sep": 0.08,
+        "min_cube_disk_sep": 0.07,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
@@ -106,7 +108,8 @@ def get_task_cfgs(task: str = "cube_disk"):
     robot_cfg = {
         "ee_link_name": "gripper",
         "jaw_link_name": "moving_jaw_so101_v1",
-        "default_arm_dof": [0.0, -0.9, 1.1, 0.9, 0.0],
+        # Home pose aimed at the raised tabletop (gripper ~ table height).
+        "default_arm_dof": [0.0, -1.2, 1.5, 1.2, 0.0],
         "default_gripper_dof": [1.7],
         "ik_method": "dls_ik",
         "gripper_open": 1.7,

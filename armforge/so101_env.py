@@ -72,6 +72,18 @@ class SO101KitchenEnv:
         )
 
         self.scene.add_entity(gs.morphs.Plane())
+        self.table_height = float(env_cfg.get("table_height", 0.10))
+        # Raised work surface so cube/disk sit inside the SO-101 gripper-frame reach envelope.
+        self.scene.add_entity(
+            gs.morphs.Box(
+                pos=(0.22, 0.0, 0.5 * self.table_height),
+                size=(0.45, 0.35, self.table_height),
+                fixed=True,
+            ),
+            surface=gs.surfaces.Rough(
+                diffuse_texture=gs.textures.ColorTexture(color=(0.55, 0.45, 0.35)),
+            ),
+        )
         self.robot = SO101Manipulator(
             num_envs=self.num_envs,
             scene=self.scene,
@@ -80,6 +92,7 @@ class SO101KitchenEnv:
         )
 
         cube_size = env_cfg.get("box_size", [0.03, 0.03, 0.03])
+        self.cube_half_z = 0.5 * float(cube_size[2])
         # Default free: a fixed cube cannot be placed, so place/success would only reflect spawn luck.
         self.object = self.scene.add_entity(
             material=gs.materials.Rigid(rho=200.0, friction=1.2),
@@ -92,7 +105,7 @@ class SO101KitchenEnv:
                 diffuse_texture=gs.textures.ColorTexture(color=(0.9, 0.15, 0.1)),
             ),
         )
-        disk_r = env_cfg.get("disk_radius", 0.05)
+        disk_r = env_cfg.get("disk_radius", 0.06)
         self.disk = self.scene.add_entity(
             gs.morphs.Cylinder(
                 radius=disk_r,
@@ -185,12 +198,15 @@ class SO101KitchenEnv:
         self.robot.reset(envs_idx)
 
         x, y = self._sample_workspace_xy()
-        z = torch.full((self.num_envs,), 0.02, device=self.device)
+        z = torch.full((self.num_envs,), self.table_height + self.cube_half_z, device=self.device)
         cube_pos = torch.stack([x, y, z], dim=-1)
         cube_xy = cube_pos[:, :2]
 
         dx, dy = self._sample_separated_disk_xy(cube_xy)
-        disk_pos = torch.stack([dx, dy, torch.full((self.num_envs,), 0.005, device=self.device)], dim=-1)
+        disk_pos = torch.stack(
+            [dx, dy, torch.full((self.num_envs,), self.table_height + 0.005, device=self.device)],
+            dim=-1,
+        )
 
         q_identity = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
         goal_pose = torch.cat([cube_pos, q_identity], dim=-1)
@@ -308,7 +324,8 @@ class SO101KitchenEnv:
     def _success_mask(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        return (xy_dist < self.env_cfg.get("disk_radius", 0.05)) & (cube_pos[:, 2] < 0.06)
+        max_z = self.table_height + self.cube_half_z + 0.04
+        return (xy_dist < self.env_cfg.get("disk_radius", 0.06)) & (cube_pos[:, 2] < max_z)
 
     def _reward_reach(self) -> torch.Tensor:
         tip_offset = torch.tensor([0.0, 0.0, -0.02], device=self.device, dtype=gs.tc_float).repeat(self.num_envs, 1)
@@ -319,8 +336,8 @@ class SO101KitchenEnv:
     def _reward_place(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
-        # Always shape XY progress; boost when the cube is near table height (pushed, not airborne).
-        is_low = (cube_pos[:, 2] < 0.08).to(dtype=gs.tc_float)
+        max_z = self.table_height + self.cube_half_z + 0.05
+        is_low = (cube_pos[:, 2] < max_z).to(dtype=gs.tc_float)
         return torch.exp(-12.0 * xy_dist) * (0.5 + 0.5 * is_low)
 
     def _reward_success(self) -> torch.Tensor:
