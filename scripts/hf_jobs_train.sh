@@ -28,18 +28,26 @@ echo "[hf-jobs] image=$IMAGE"
   --flavor "$FLAVOR" \
   --timeout "$TIMEOUT" \
   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+  -e PYOPENGL_PLATFORM=glx \
   -s HF_TOKEN \
   -d \
   "$IMAGE" \
   -- bash -c "
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git wget ca-certificates libgl1 libglib2.0-0 >/dev/null
+apt-get install -y -qq \
+  git wget ca-certificates xvfb \
+  libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libx11-6 \
+  libxi6 libxrandr2 libxcursor1 libxinerama1 libxfixes3 \
+  libegl1 libgles2 libosmesa6 >/dev/null
 pip install -q --upgrade pip
+# Keep the image CUDA torch; genesis/rsl must not pull a CPU/newer torch.
+pip install -q --upgrade --force-reinstall 'torch==2.6.0' 'torchvision==0.21.0' --index-url https://download.pytorch.org/whl/cu124
 pip install -q 'genesis-world>=1.1.2' 'rsl-rl-lib>=5.0.0' tensordict huggingface_hub Pillow
 git clone --depth 1 '$REPO_URL' /workspace/slobot-armforge
 cd /workspace/slobot-armforge
-python armforge/train.py --stage rl --backend cuda -B $N_ENVS --max_iterations $ITERS -e armforge_so101_hf
+xvfb-run -a python armforge/train.py --stage rl --backend cuda -B $N_ENVS --max_iterations $ITERS -e armforge_so101_hf
 # Upload checkpoints to the Hub under the authenticated user
 python - <<'PY'
 from pathlib import Path
