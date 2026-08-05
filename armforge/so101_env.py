@@ -40,9 +40,10 @@ class SO101KitchenEnv:
         self.ctrl_dt = env_cfg["ctrl_dt"]
         self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.ctrl_dt)
         self.success_hold_steps = max(1, math.ceil(env_cfg.get("success_hold_s", 0.4) / self.ctrl_dt))
-        self.min_cube_disk_sep = float(env_cfg.get("min_cube_disk_sep", 0.08))
         self.grasp_dist = float(env_cfg.get("grasp_dist", 0.035))
         self.lift_height = float(env_cfg.get("lift_height", 0.03))
+        self.cube_pos_xy = tuple(env_cfg.get("cube_pos_xy", (0.18, 0.0)))
+        self.disk_pos_xy = tuple(env_cfg.get("disk_pos_xy", (0.24, 0.08)))
         self.env_cfg = env_cfg
         self.reward_scales = dict(reward_cfg)
         self.action_scales = torch.tensor(env_cfg["action_scales"], device=self.device)
@@ -58,6 +59,7 @@ class SO101KitchenEnv:
                 constraint_solver=gs.constraint_solver.Newton,
                 enable_collision=True,
                 enable_joint_limit=True,
+                noslip_iterations=2,
             ),
             vis_options=gs.options.VisOptions(
                 rendered_envs_idx=list(range(min(10, self.num_envs))),
@@ -74,24 +76,13 @@ class SO101KitchenEnv:
         )
 
         self.scene.add_entity(gs.morphs.Plane())
-        self.table_height = float(env_cfg.get("table_height", 0.10))
-        self.disk_height = float(env_cfg.get("disk_height", 0.04))
+        self.table_height = float(env_cfg.get("table_height", 0.0))
+        self.disk_height = float(env_cfg.get("disk_height", 0.015))
         self.disk_radius = float(env_cfg.get("disk_radius", 0.06))
-        # Raised work surface so cube/disk sit inside the SO-101 gripper-frame reach envelope.
-        self.scene.add_entity(
-            gs.morphs.Box(
-                pos=(0.22, 0.0, 0.5 * self.table_height),
-                size=(0.45, 0.35, self.table_height),
-                fixed=True,
-            ),
-            surface=gs.surfaces.Rough(
-                diffuse_texture=gs.textures.ColorTexture(color=(0.55, 0.45, 0.35)),
-            ),
-        )
         self.robot = SO101Manipulator(
             num_envs=self.num_envs,
             scene=self.scene,
-            args=robot_cfg,
+            args={**robot_cfg, "base_pos": (0.0, 0.0, self.table_height)},
             device=gs.device,
         )
 
@@ -184,38 +175,21 @@ class SO101KitchenEnv:
         self._did_lift = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
         self.extras = dict()
 
-    def _sample_workspace_xy(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.rand(self.num_envs, device=self.device) * 0.12 + 0.12
-        y = (torch.rand(self.num_envs, device=self.device) - 0.5) * 0.16
-        return x, y
-
-    def _sample_separated_disk_xy(self, cube_xy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample disk XY at least min_cube_disk_sep from the cube so success is not free at spawn."""
-        dx, dy = self._sample_workspace_xy()
-        disk_xy = torch.stack([dx + 0.05, dy], dim=-1)
-        for _ in range(40):
-            sep = torch.norm(disk_xy - cube_xy, dim=-1)
-            is_too_close = sep < self.min_cube_disk_sep
-            if not is_too_close.any():
-                break
-            rdx, rdy = self._sample_workspace_xy()
-            resample = torch.stack([rdx + 0.05, rdy], dim=-1)
-            disk_xy = torch.where(is_too_close[:, None], resample, disk_xy)
-        return disk_xy[:, 0], disk_xy[:, 1]
-
     def _reset_idx(self, envs_idx=None) -> None:
         self.robot.reset(envs_idx)
 
-        x, y = self._sample_workspace_xy()
+        x = torch.full((self.num_envs,), float(self.cube_pos_xy[0]), device=self.device)
+        y = torch.full((self.num_envs,), float(self.cube_pos_xy[1]), device=self.device)
         z = torch.full((self.num_envs,), self.table_height + self.cube_half_z, device=self.device)
         cube_pos = torch.stack([x, y, z], dim=-1)
-        cube_xy = cube_pos[:, :2]
 
-        dx, dy = self._sample_separated_disk_xy(cube_xy)
-        # Cylinder origin is its center; top face sits at table + disk_height.
         disk_z = self.table_height + 0.5 * self.disk_height
         disk_pos = torch.stack(
-            [dx, dy, torch.full((self.num_envs,), disk_z, device=self.device)],
+            [
+                torch.full((self.num_envs,), float(self.disk_pos_xy[0]), device=self.device),
+                torch.full((self.num_envs,), float(self.disk_pos_xy[1]), device=self.device),
+                torch.full((self.num_envs,), disk_z, device=self.device),
+            ],
             dim=-1,
         )
 

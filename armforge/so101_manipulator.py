@@ -23,6 +23,8 @@ class SO101Manipulator:
             file=mjcf,
             pos=tuple(args.get("base_pos", (0.0, 0.0, 0.0))),
             quat=tuple(args.get("base_quat", (1.0, 0.0, 0.0, 0.0))),
+            convexify=True,
+            decompose_robot_error_threshold=0.0,
         )
         self._robot_entity = scene.add_entity(
             material=gs.materials.Rigid(gravity_compensation=1.0),
@@ -30,8 +32,8 @@ class SO101Manipulator:
         )
 
         # Gripper hinge: closed near lower bound, open near upper bound (MJCF range).
-        self._gripper_open_dof = float(args.get("gripper_open", 1.7))
-        self._gripper_close_dof = float(args.get("gripper_close", 0.0))
+        self._gripper_open_dof = float(args.get("gripper_open", 1.745))
+        self._gripper_close_dof = float(args.get("gripper_close", -0.174))
         self._init()
 
     def set_pd_gains(self) -> None:
@@ -52,9 +54,11 @@ class SO101Manipulator:
         jaw_name = self._args.get("jaw_link_name", "moving_jaw_so101_v1")
         self._jaw_link = self._robot_entity.get_link(jaw_name)
 
-        default_arm = self._args.get("default_arm_dof", [0.0, -0.9, 1.1, 0.9, 0.0])
-        default_grip = self._args.get("default_gripper_dof", [self._gripper_open_dof])
-        self._init_qpos = torch.tensor(default_arm + default_grip, dtype=torch.float32, device=self._device)
+        self._init_qpos = torch.tensor(
+            [0.0] * self._arm_dof_dim + [self._gripper_close_dof],
+            dtype=torch.float32,
+            device=self._device,
+        )
 
     def reset(self, envs_idx=None, skip_forward=True) -> None:
         self._robot_entity.set_qpos(

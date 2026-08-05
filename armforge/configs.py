@@ -87,12 +87,14 @@ def get_task_cfgs(task: str = "cube_disk"):
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
         "box_fixed": False,
-        "table_height": 0.10,
-        # Raised pedestal: sliding/pushing cannot seat the cube; must lift over the lip.
-        "disk_radius": 0.06,
-        "disk_height": 0.04,
+        "table_height": 0.0,
+        # Disk diameter = cube side; height = half cube side.
+        "disk_radius": 0.015,
+        "disk_height": 0.015,
         "success_hold_s": 0.3,
-        "min_cube_disk_sep": 0.12,
+        # Fixed spawn poses (no randomization) to simplify learning / teleop.
+        "cube_pos_xy": (0.18, 0.0),
+        "disk_pos_xy": (0.24, 0.08),
         "grasp_dist": 0.035,
         "lift_height": 0.03,
         "image_resolution": (256, 256),
@@ -111,9 +113,10 @@ def get_task_cfgs(task: str = "cube_disk"):
     robot_cfg = {
         "ee_link_name": "gripper",
         "jaw_link_name": "moving_jaw_so101_v1",
-        "default_arm_dof": [0.0, -1.2, 1.5, 1.2, 0.0],
-        "default_gripper_dof": [1.7],
-        "gripper_open": 1.7,
-        "gripper_close": 0.0,
+        # Mount on the ground plane (no tabletop).
+        "base_pos": (0.0, 0.0, 0.0),
+        # MJCF gripper range is ~[-0.175, 1.745].
+        "gripper_open": 1.745,
+        "gripper_close": -0.174,
     }
     return env_cfg, reward_scales, robot_cfg
