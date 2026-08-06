@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -17,15 +18,22 @@ def so101_mjcf_path() -> Path:
     Upstream ``so101_new_calib.xml`` only attaches *visual* meshes on ``base``. In
     collision visualization that looks like a missing base, and the shoulder
     collision hulls sit on the table with nothing connecting them visually.
+
+    Set ``ARMFORGE_SO101_ROOT`` to a local SO101 directory to skip Hub download
+    (useful on air-gapped / firewalled cloud hosts).
     """
-    asset_root = Path(
-        snapshot_download(
-            repo_type="dataset",
-            repo_id=_ASSETS_REPO,
-            allow_patterns=[_SO101_PATTERN],
+    override = os.environ.get("ARMFORGE_SO101_ROOT", "").strip()
+    if override:
+        src = Path(override).expanduser().resolve() / "so101_new_calib.xml"
+    else:
+        asset_root = Path(
+            snapshot_download(
+                repo_type="dataset",
+                repo_id=_ASSETS_REPO,
+                allow_patterns=[_SO101_PATTERN],
+            )
         )
-    )
-    src = asset_root / "SO101" / "so101_new_calib.xml"
+        src = asset_root / "SO101" / "so101_new_calib.xml"
     if not src.is_file():
         raise FileNotFoundError(f"SO-101 MJCF not found at {src}")
     return _mjcf_with_base_collision(src)

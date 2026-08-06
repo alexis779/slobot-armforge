@@ -77,6 +77,54 @@ def get_train_cfg(exp_name: str):
     return rl_cfg_dict, bc_cfg_dict
 
 
+def get_sac_cfg(exp_name: str) -> dict:
+    """Stable-Baselines3 SAC hyperparameters (privileged cube/disk teacher)."""
+    return {
+        "run_name": exp_name,
+        "algorithm": "SAC",
+        # Matched to PPO: total_timesteps = max_iterations * num_steps_per_env * num_envs
+        "num_steps_per_env": 24,
+        "learning_rate": 3e-4,
+        "buffer_size": 1_000_000,
+        "learning_starts": 10_000,
+        "batch_size": 256,
+        "tau": 0.005,
+        "gamma": 0.99,
+        "train_freq": 1,
+        "gradient_steps": 1,
+        "ent_coef": "auto",
+        "policy_kwargs": {
+            "net_arch": [256, 256, 128],
+        },
+        "save_interval_timesteps": None,  # set in train from iteration budget
+    }
+
+
+def get_dqn_cfg(exp_name: str) -> dict:
+    """Stable-Baselines3 DQN hyperparameters (Discrete teleop-key teacher)."""
+    return {
+        "run_name": exp_name,
+        "algorithm": "DQN",
+        # Matched to PPO/SAC: total_timesteps = max_iterations * num_steps_per_env * num_envs
+        "num_steps_per_env": 24,
+        "learning_rate": 1e-4,
+        "buffer_size": 1_000_000,
+        "learning_starts": 10_000,
+        "batch_size": 256,
+        "tau": 1.0,
+        "gamma": 0.99,
+        "train_freq": 4,
+        "gradient_steps": 1,
+        "target_update_interval": 1000,
+        "exploration_fraction": 0.2,
+        "exploration_initial_eps": 1.0,
+        "exploration_final_eps": 0.05,
+        "policy_kwargs": {
+            "net_arch": [256, 256, 128],
+        },
+        "save_interval_timesteps": None,
+    }
+
 def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,

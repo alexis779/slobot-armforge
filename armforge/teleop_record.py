@@ -52,6 +52,7 @@ def main():
             enable_joint_limit=True,
             enable_collision=True,
             gravity=(0, 0, -9.8),
+            noslip_iterations=4,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(0.7, -0.5, 0.4),
@@ -68,11 +69,12 @@ def main():
     )
     cube = scene.add_entity(
         material=gs.materials.Rigid(rho=300),
-        morph=gs.morphs.Box(pos=(0.18, 0.0, 0.02), size=(0.03, 0.03, 0.03)),
+        morph=gs.morphs.Box(pos=(0.18, 0.0, 0.115), size=(0.03, 0.03, 0.03)),
         surface=gs.surfaces.Default(color=(0.9, 0.2, 0.1)),
     )
     disk = scene.add_entity(
-        gs.morphs.Cylinder(pos=(0.22, 0.08, 0.005), radius=0.04, height=0.01, fixed=True),
+        # Diameter matches cube side (0.03m); raised so pick-and-place is required.
+        gs.morphs.Cylinder(pos=(0.22, 0.08, 0.12), radius=0.015, height=0.04, fixed=True),
         surface=gs.surfaces.Default(color=(0.2, 0.5, 0.9)),
     )
     target_vis = scene.add_entity(
@@ -114,8 +116,8 @@ def main():
         q = robot.inverse_kinematics(link=ee_link, pos=target_pos, quat=target_quat, dofs_idx_local=motors_dof)
         robot.set_qpos(q[:5] if hasattr(q, "__len__") else q, motors_dof)
         robot.set_dofs_position(np.array([1.7]), gripper_dof)
-        cube.set_pos((np.random.uniform(0.14, 0.22), np.random.uniform(-0.06, 0.06), 0.02))
-        disk.set_pos((np.random.uniform(0.18, 0.26), np.random.uniform(0.04, 0.10), 0.005))
+        cube.set_pos((0.18, 0.0, 0.015))
+        disk.set_pos((0.24, 0.08, 0.02))
         episode_cam._stale = True
 
     def move(delta):

@@ -4,20 +4,20 @@ This document is ready to paste into a Genesis pull request. Opening the PR requ
 
 ## Suggested PR title
 
-`[FEATURE] Add ArmForge SO-101 kitchen manipulation example with ROCm path.`
+`[FEATURE] Add ArmForge SO-101 cube-disk teleop example with ROCm path.`
 
 ## Summary
 
-- Add `examples/armforge/`: SO-ARM-101 Cartesian teleop → LeRobot-style dataset → privileged PPO → vision BC on kitchen cube-disk tasks.
+- Add `examples/armforge/`: SO-ARM-101 key-action teleop → LeRobot-style dataset on cube-disk tasks.
 - Prefer `gs.amdgpu` via `--backend amdgpu|auto` and document Docker ROCm workflow; vision uses rasterizer cameras on AMD (Madrona remains CUDA-only).
-- Include FPS benchmark script, visual success classifier, and competition writeup (`COMPETITION.md`).
+- Include key-action throughput benchmark and competition writeup (`COMPETITION.md`).
 
 ## Test plan
 
-- [ ] `cd examples/armforge && python benchmark_fps.py --backend cpu -B 16 --steps 50`
-- [ ] `python train.py --stage rl -B 8 --max_iterations 5 --backend cpu`
-- [ ] `python train.py --stage bc --max_iterations 3 --backend cpu` (after RL)
-- [ ] `python visual_classifier.py --backend cpu -B 4 --steps 40 --epochs 3`
+- [ ] `cd examples/armforge && python record_lerobot.py --root datasets/so101_cube_disk` (short episode)
+- [ ] `python optimize_lerobot.py --root datasets/so101_cube_disk --episode 0 --backend cpu`
+- [ ] `python replay_lerobot.py --root datasets/so101_cube_disk --episode 0`
+- [ ] `python benchmark_key_action.py --backend cpu -B 4`
 - [ ] On AMD hardware / DevMaster GPU: repeat with `--backend amdgpu`
 
 ## Files

@@ -22,15 +22,13 @@ git clone https://github.com/alexis779/slobot-armforge.git
 cd slobot-armforge
 bash scripts/cloud_bootstrap.sh          # build image + open shell
 # or
-bash scripts/cloud_bootstrap.sh train    # PPO teacher on amdgpu
-bash scripts/cloud_bootstrap.sh bench    # FPS report -> logs/bench.json
-bash scripts/cloud_bootstrap.sh eval     # rollout + video
+bash scripts/cloud_bootstrap.sh bench    # key-action throughput -> logs/bench.json
 ```
 
 Inside the container always use:
 
 ```bash
-python armforge/train.py --backend amdgpu ...
+python armforge/benchmark_key_action.py --backend amdgpu ...
 # equivalent to gs.init(backend=gs.amdgpu)
 ```
 
@@ -40,7 +38,7 @@ Cloud VMs are headless. The Docker image includes `xvfb` and GL/Vulkan libs. If 
 fails to open a GL context:
 
 ```bash
-xvfb-run -a python armforge/benchmark_fps.py --backend amdgpu -B 64 --steps 50
+xvfb-run -a python armforge/benchmark_key_action.py --backend amdgpu -B 8
 ```
 
 ## 4. Hackathon GPU pool

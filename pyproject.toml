@@ -15,6 +15,9 @@ dependencies = [
     "huggingface_hub",
     "Pillow",
     "rsl-rl-lib>=5.0.0",
+    "stable-baselines3>=2.3.0",
+    "gymnasium",
+    "lerobot[dataset]>=0.6.1",
 ]
 
 [project.optional-dependencies]

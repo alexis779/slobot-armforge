@@ -2,7 +2,7 @@
 # Bootstrap slobot-armforge on an AMD Developer Cloud / ROCm VM.
 # Usage (on the remote VM after cloning the repo):
 #   bash scripts/cloud_bootstrap.sh
-#   bash scripts/cloud_bootstrap.sh train   # optional: kick off RL smoke train
+#   bash scripts/cloud_bootstrap.sh bench   # key-action throughput on amdgpu
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,16 +32,10 @@ case "$RUN_CMD" in
     "${COMMON[@]}"
     ;;
   bench)
-    "${COMMON[@]}" bash -lc 'python armforge/benchmark_fps.py --backend amdgpu -B 64 --steps 100 --out logs/bench.json'
-    ;;
-  train)
-    "${COMMON[@]}" bash -lc 'python armforge/train.py --stage rl --backend amdgpu -B 256 --max_iterations 300 -e armforge_so101'
-    ;;
-  eval)
-    "${COMMON[@]}" bash -lc 'python armforge/eval.py --stage rl -e armforge_so101 --episodes 10 --backend amdgpu --record'
+    "${COMMON[@]}" bash -lc 'python armforge/benchmark_key_action.py --backend amdgpu -B 8 --out logs/bench.json'
     ;;
   *)
-    echo "Unknown command: $RUN_CMD (shell|bench|train|eval)"
+    echo "Unknown command: $RUN_CMD (shell|bench)"
     exit 1
     ;;
 esac

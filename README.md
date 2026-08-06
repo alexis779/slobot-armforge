@@ -1,7 +1,7 @@
 # slobot-armforge
 
 Teach an **SO-ARM-101** to place a cube on a disk in [Genesis](https://github.com/Genesis-Embodied-AI/Genesis),
-train a vision policy on **AMD Radeon / ROCm**, and export LeRobot-shaped datasets.
+record teleop on **AMD Radeon / ROCm**, and export LeRobot-shaped datasets.
 
 Layout and ROCm Docker follow the spirit of
 [`wangxunx/franka_fruit_pick_demo`](https://github.com/wangxunx/franka_fruit_pick_demo)
@@ -11,16 +11,16 @@ Layout and ROCm Docker follow the spirit of
 
 | Stage | Command |
 |-------|---------|
-| Benchmark FPS | `python armforge/benchmark_fps.py --backend amdgpu -B 64` |
-| Teleop + record | `python armforge/teleop_record.py --out datasets/cube_disk` |
-| RL teacher | `python armforge/train.py --stage rl --backend amdgpu -B 256` |
-| Vision BC | `python armforge/train.py --stage bc --backend amdgpu --human_demo_dir datasets/cube_disk/data` |
-| Eval | `python armforge/eval.py --stage rl --backend amdgpu --record` |
-| Success CNN | `python armforge/visual_classifier.py --backend amdgpu` |
+| Teleop + record (NPZ) | `python armforge/teleop_record.py --out datasets/cube_disk` |
+| Teleop + LeRobot dataset | `python armforge/record_lerobot.py --root datasets/so101_cube_disk` |
+| Replay LeRobot episode | `python armforge/replay_lerobot.py --root datasets/so101_cube_disk --episode 0` |
+| Drop idle teleop frames | `python armforge/optimize_lerobot.py --root datasets/so101_cube_disk --episode 0 --backend cpu` |
+| Key-action throughput | `python armforge/benchmark_key_action.py --backend amdgpu -B 8` |
 
-**Cameras:** one high-res **episode** camera (1280×960). Training downscales to 256×256.
+**Cameras:** one high-res **episode** camera (1280×960).
 
-**Actions:** joint-space arm deltas + gripper (6-D) for pick-and-place onto a raised disk.
+**Actions:** key-action teleop / replay use a 14-D multi-hot layout (`record_lerobot.py`).
+`optimize_lerobot.py` drops all-zero idle frames and verifies success in a single env.
 
 ## Quickstart (local / cloud VM)
 
@@ -29,7 +29,7 @@ Layout and ROCm Docker follow the spirit of
 uv sync
 # Install ROCm torch — see docs/AMD_DEVELOPER_CLOUD.md or use Docker below
 
-python armforge/benchmark_fps.py --backend auto -B 16 --steps 50
+python armforge/benchmark_key_action.py --backend auto -B 8
 ```
 
 ### AMD ROCm Docker (recommended)
@@ -37,7 +37,7 @@ python armforge/benchmark_fps.py --backend auto -B 16 --steps 50
 ```bash
 docker build -f docker/Dockerfile -t slobot-armforge:rocm7.2.1 .
 bash scripts/cloud_bootstrap.sh          # interactive shell on GPU
-bash scripts/cloud_bootstrap.sh train    # PPO on amdgpu
+bash scripts/cloud_bootstrap.sh bench    # key-action throughput on amdgpu
 ```
 
 ## AMD Developer Cloud
