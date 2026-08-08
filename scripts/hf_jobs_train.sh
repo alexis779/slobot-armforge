@@ -14,7 +14,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HF="${HF_BIN:-hf}"
+if [[ -n "${HF_BIN:-}" ]]; then
+  HF_CMD=("$HF_BIN")
+elif command -v hf >/dev/null 2>&1; then
+  HF_CMD=(hf)
+else
+  HF_CMD=(uv run hf)
+fi
 FLAVOR="${FLAVOR:-a10g-small}"
 ITERS="${ITERS:-2700}"
 N_ENVS="${N_ENVS:-4096}"
@@ -35,7 +41,7 @@ echo "[hf-jobs] budget: sec_per_iter=$SEC_PER_ITER source=$SEC_PER_ITER_SOURCE t
 
 # Detach so we can poll logs; token from env is picked up by hf CLI.
 # Use `--` so hf CLI does not steal bash flags (-l is --label on jobs run).
-"$HF" jobs run \
+"${HF_CMD[@]}" jobs run \
   --flavor "$FLAVOR" \
   --timeout "$TIMEOUT" \
   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
