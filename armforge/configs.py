@@ -9,7 +9,7 @@ def get_train_cfg(exp_name: str):
             "class_name": "PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
-            "entropy_coef": 0.0,
+            "entropy_coef": 0.01,
             "gamma": 0.99,
             "lam": 0.95,
             "learning_rate": 0.0003,
@@ -22,18 +22,20 @@ def get_train_cfg(exp_name: str):
         },
         "actor": {
             "class_name": "MLPModel",
-            "hidden_dims": [256, 256, 128],
-            "activation": "relu",
+            "hidden_dims": [512, 256, 128],
+            "activation": "elu",
+            "obs_normalization": True,
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
-                "init_std": 0.5,
+                "init_std": 1.0,
                 "std_type": "scalar",
             },
         },
         "critic": {
             "class_name": "MLPModel",
-            "hidden_dims": [256, 256, 128],
-            "activation": "relu",
+            "hidden_dims": [512, 256, 128],
+            "activation": "elu",
+            "obs_normalization": True,
         },
         "obs_groups": {
             "actor": ["policy"],
@@ -125,38 +127,43 @@ def get_dqn_cfg(exp_name: str) -> dict:
         "save_interval_timesteps": None,
     }
 
+
 def get_task_cfgs(task: str = "cube_disk"):
     env_cfg = {
         "num_envs": 10,
-        # Pick-and-place: 5 arm deltas + gripper open/close.
-        "num_actions": 6,
-        "action_scales": [0.05, 0.05, 0.05, 0.05, 0.05, 1.0],
+        # SafeSort-style hybrid: world-frame Δxyz only (scripted attach/release).
+        "control_mode": "hybrid_cartesian",
+        "num_actions": 3,
+        "action_scales": [0.0075, 0.0075, 0.0075],
         "episode_length_s": 8.0,
         "ctrl_dt": 0.02,
         "box_size": [0.03, 0.03, 0.03],
         "box_fixed": False,
         "table_height": 0.0,
-        # Disk diameter = cube side; height = half cube side.
-        "disk_radius": 0.015,
+        # Disk diameter = 2× cube side ⇒ radius = cube side; height = half cube side.
+        "disk_radius": 0.03,
         "disk_height": 0.015,
         "success_hold_s": 0.3,
         # Fixed spawn poses (no randomization) to simplify learning / teleop.
         "cube_pos_xy": (0.18, 0.0),
         "disk_pos_xy": (0.24, 0.08),
-        "grasp_dist": 0.035,
+        "grasp_dist": 0.05,
         "lift_height": 0.03,
+        "release_xy": 0.035,
+        "release_z_tol": 0.04,
+        "carry_z_offset": -0.02,
         "image_resolution": (256, 256),
         "episode_resolution": (1280, 960),
         "visualize_camera": False,
         "task": task,
     }
-    # Staged shaping: reach → grasp → lift → place; success is a one-shot held bonus.
+    # SafeSort-style potentials + event bonuses (absolute; not × dt except legacy joint terms).
     reward_scales = {
-        "reach": 0.5,
-        "grasp": 1.5,
-        "lift": 2.0,
-        "place": 3.0,
-        "success": 25.0,
+        "step": -0.01,
+        "approach": 8.0,
+        "attach": 8.0,
+        "carry": 10.0,
+        "success": 30.0,
     }
     robot_cfg = {
         "ee_link_name": "gripper",

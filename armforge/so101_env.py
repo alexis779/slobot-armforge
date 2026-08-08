@@ -23,7 +23,12 @@ except ImportError:
 
 
 class SO101KitchenEnv:
-    """Gym-style parallel env: pick a cube and place it on a raised disk."""
+    """Gym-style parallel env: pick a cube and place it on a raised disk.
+
+    ``control_mode``:
+    - ``hybrid_cartesian`` (default): SafeSort-style Δxyz + kinematic attach/release
+    - ``joint``: legacy joint deltas + learned gripper
+    """
 
     def __init__(
         self,
@@ -36,12 +41,16 @@ class SO101KitchenEnv:
         self.num_actions = env_cfg["num_actions"]
         self.cfg = env_cfg
         self.device = gs.device
+        self.control_mode = str(env_cfg.get("control_mode", "hybrid_cartesian"))
 
         self.ctrl_dt = env_cfg["ctrl_dt"]
         self.max_episode_length = math.ceil(env_cfg["episode_length_s"] / self.ctrl_dt)
         self.success_hold_steps = max(1, math.ceil(env_cfg.get("success_hold_s", 0.4) / self.ctrl_dt))
         self.grasp_dist = float(env_cfg.get("grasp_dist", 0.035))
         self.lift_height = float(env_cfg.get("lift_height", 0.03))
+        self.release_xy = float(env_cfg.get("release_xy", 0.035))
+        self.release_z_tol = float(env_cfg.get("release_z_tol", 0.04))
+        self.carry_z_offset = float(env_cfg.get("carry_z_offset", -0.02))
         self.cube_pos_xy = tuple(env_cfg.get("cube_pos_xy", (0.18, 0.0)))
         self.disk_pos_xy = tuple(env_cfg.get("disk_pos_xy", (0.24, 0.08)))
         self.env_cfg = env_cfg
@@ -82,13 +91,16 @@ class SO101KitchenEnv:
         self.robot = SO101Manipulator(
             num_envs=self.num_envs,
             scene=self.scene,
-            args={**robot_cfg, "base_pos": (0.0, 0.0, self.table_height)},
+            args={
+                **robot_cfg,
+                "base_pos": (0.0, 0.0, self.table_height),
+                "control_mode": self.control_mode,
+            },
             device=gs.device,
         )
 
         cube_size = env_cfg.get("box_size", [0.03, 0.03, 0.03])
         self.cube_half_z = 0.5 * float(cube_size[2])
-        # Heavier + grippier cube so the jaw can pinch without batting it away.
         self.object = self.scene.add_entity(
             material=gs.materials.Rigid(rho=500.0, friction=1.5),
             morph=gs.morphs.Box(
@@ -100,7 +112,6 @@ class SO101KitchenEnv:
                 diffuse_texture=gs.textures.ColorTexture(color=(0.9, 0.15, 0.1)),
             ),
         )
-        # Pedestal disk: height blocks hit-and-slide; cube must be lifted onto the top face.
         self.disk = self.scene.add_entity(
             gs.morphs.Cylinder(
                 radius=self.disk_radius,
@@ -151,11 +162,14 @@ class SO101KitchenEnv:
 
         self.scene.build(n_envs=env_cfg["num_envs"], env_spacing=(1.0, 1.0))
         self.robot.set_pd_gains()
+        if self.control_mode == "hybrid_cartesian":
+            self.robot.init_cartesian_buffers()
 
+        # Event / potential terms stay absolute; only legacy dense joint rates use × dt.
+        self._dt_scaled_rewards = {"reach", "grasp", "lift", "place"}
         self.reward_functions, self.episode_sums = dict(), dict()
         for name in self.reward_scales.keys():
-            # Dense terms are rates (× dt); success is a one-shot held-solve bonus.
-            if name != "success":
+            if name in self._dt_scaled_rewards:
                 self.reward_scales[name] *= self.ctrl_dt
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=gs.device, dtype=gs.tc_float)
@@ -171,8 +185,13 @@ class SO101KitchenEnv:
         self.disk_pos = torch.zeros(self.num_envs, 3, device=gs.device, dtype=gs.tc_float)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, device=gs.device, dtype=gs.tc_float)
         self._is_held = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
-        # Must lift while grasping before a table-slide can count as success.
         self._did_lift = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
+        self._holding = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
+        self._attach_offset = torch.zeros(self.num_envs, 3, device=gs.device, dtype=gs.tc_float)
+        self._prev_finger_cube = torch.zeros(self.num_envs, device=gs.device, dtype=gs.tc_float)
+        self._prev_cube_disk_xy = torch.zeros(self.num_envs, device=gs.device, dtype=gs.tc_float)
+        self._attached_this_step = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
+        self._released_this_step = torch.zeros(self.num_envs, dtype=gs.tc_bool, device=gs.device)
         self.extras = dict()
 
     def _reset_idx(self, envs_idx=None) -> None:
@@ -205,6 +224,8 @@ class SO101KitchenEnv:
             self.episode_length_buf.zero_()
             self.success_hold_buf.zero_()
             self._did_lift.zero_()
+            self._holding.zero_()
+            self._attach_offset.zero_()
             self.reset_buf.fill_(True)
         else:
             torch.where(envs_idx[:, None], goal_pose, self.goal_pose, out=self.goal_pose)
@@ -215,7 +236,21 @@ class SO101KitchenEnv:
             self.episode_length_buf.masked_fill_(envs_idx, 0)
             self.success_hold_buf.masked_fill_(envs_idx, 0)
             self._did_lift.masked_fill_(envs_idx, False)
+            self._holding.masked_fill_(envs_idx, False)
+            self._attach_offset.masked_fill_(envs_idx[:, None], 0.0)
             self.reset_buf.masked_fill_(envs_idx, True)
+
+        # Refresh potential baselines after reset poses are applied.
+        finger_d = self._finger_cube_dist()
+        xy_d = torch.norm(self.object.get_pos()[:, :2] - self.disk_pos[:, :2], dim=-1)
+        if envs_idx is None:
+            self._prev_finger_cube.copy_(finger_d)
+            self._prev_cube_disk_xy.copy_(xy_d)
+            self.last_actions.zero_()
+        else:
+            self._prev_finger_cube = torch.where(envs_idx, finger_d, self._prev_finger_cube)
+            self._prev_cube_disk_xy = torch.where(envs_idx, xy_d, self._prev_cube_disk_xy)
+            self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
 
         if self.episode_cam is not None:
             self.episode_cam._stale = True
@@ -235,24 +270,65 @@ class SO101KitchenEnv:
 
         if envs_idx is None:
             self.extras["episode"]["success_rate"] = self._is_held.float().mean()
-            self.last_actions.zero_()
         else:
             n = n_envs.clamp(min=1).to(dtype=gs.tc_float)
             self.extras["episode"]["success_rate"] = (self._is_held & envs_idx).sum().to(dtype=gs.tc_float) / n
-            self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
 
     def reset(self) -> TensorDict:
         self._reset_idx()
         return self.get_observations()
 
+    def _update_hybrid_attach_release(self) -> None:
+        self._attached_this_step.zero_()
+        self._released_this_step.zero_()
+
+        finger_d = self._finger_cube_dist()
+        can_attach = (~self._holding) & (finger_d < self.grasp_dist)
+        if can_attach.any():
+            ee = self.robot.center_finger_pose[:, :3]
+            cube = self.object.get_pos()
+            # Prefer a small downward offset so the cube hangs under the fingers.
+            offset = cube - ee
+            offset[:, 2] = self.carry_z_offset
+            self._attach_offset = torch.where(can_attach.unsqueeze(-1), offset, self._attach_offset)
+            self._holding = self._holding | can_attach
+            self._attached_this_step = can_attach
+
+        # Kinematic carry while holding.
+        if self._holding.any():
+            ee = self.robot.center_finger_pose[:, :3]
+            ee_quat = self.robot.center_finger_pose[:, 3:7]
+            carry_pos = ee + self._attach_offset
+            hold_idx = self._holding.nonzero(as_tuple=False).flatten()
+            self.object.set_pos(carry_pos, envs_idx=hold_idx, zero_velocity=True, skip_forward=True)
+            self.object.set_quat(ee_quat, envs_idx=hold_idx, zero_velocity=True, skip_forward=True)
+            self._did_lift |= self._holding & self._is_lifted()
+
+        cube_pos = self.object.get_pos()
+        xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
+        disk_top = self.table_height + self.disk_height
+        near_disk = xy_dist < self.release_xy
+        low_enough = cube_pos[:, 2] < (disk_top + self.cube_half_z + self.release_z_tol)
+        can_release = self._holding & near_disk & low_enough & self._did_lift
+        if can_release.any():
+            self._holding = self._holding & ~can_release
+            self._released_this_step = can_release
+
     def step(self, actions: torch.Tensor) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
         actions = self.rescale_action(actions)
         self.last_actions.copy_(actions)
-        self.robot.apply_action(actions)
-        self.scene.step()
-        self.episode_length_buf += 1
 
-        self._did_lift |= self._is_grasping() & self._is_lifted()
+        if self.control_mode == "hybrid_cartesian":
+            # Gripper follows previous holding state; attach/release updates after the step.
+            self.robot.apply_cartesian_action(actions[:, :3], self._holding)
+            self.scene.step()
+            self._update_hybrid_attach_release()
+        else:
+            self.robot.apply_action(actions)
+            self.scene.step()
+            self._did_lift |= self._is_grasping() & self._is_lifted()
+
+        self.episode_length_buf += 1
 
         is_success = self._success_mask()
         self.success_hold_buf = torch.where(is_success, self.success_hold_buf + 1, torch.zeros_like(self.success_hold_buf))
@@ -271,6 +347,12 @@ class SO101KitchenEnv:
             reward += rew
             self.episode_sums[name] += rew
 
+        # Update potentials after reward (SafeSort uses prev−curr from last step).
+        finger_d = self._finger_cube_dist()
+        xy_d = torch.norm(self.object.get_pos()[:, :2] - self.disk_pos[:, :2], dim=-1)
+        self._prev_finger_cube = finger_d.detach()
+        self._prev_cube_disk_xy = xy_d.detach()
+
         self._reset_idx(self.reset_buf)
         return self.get_observations(), reward, self.reset_buf, self.extras
 
@@ -281,6 +363,7 @@ class SO101KitchenEnv:
         )
         target_pos = self.object.get_pos()
         target_quat = self.object.get_quat()
+        hold = self._holding.to(dtype=gs.tc_float).unsqueeze(-1)
         self.obs_buf = torch.cat(
             [
                 finger_pos - target_pos,
@@ -290,6 +373,7 @@ class SO101KitchenEnv:
                 target_pos - self.disk_pos,
                 self.disk_pos,
                 self.robot.qpos,
+                hold,
                 self.last_actions,
             ],
             dim=-1,
@@ -326,7 +410,8 @@ class SO101KitchenEnv:
         return torch.norm(finger_tip - self.object.get_pos(), dim=-1)
 
     def _is_grasping(self) -> torch.Tensor:
-        # Closed-ish jaw near the cube — open jaw does not count as a grasp.
+        if self.control_mode == "hybrid_cartesian":
+            return self._holding
         closed = self.robot.gripper_openness < 0.45
         return (self._finger_cube_dist() < self.grasp_dist) & closed
 
@@ -335,21 +420,43 @@ class SO101KitchenEnv:
         return cube_z > (self.table_height + self.cube_half_z + self.lift_height)
 
     def _is_released(self) -> torch.Tensor:
+        if self.control_mode == "hybrid_cartesian":
+            return ~self._holding
         return self.robot.gripper_openness > 0.55
 
     def _on_disk(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
         disk_top = self.table_height + self.disk_height
-        # Resting on the pedestal top (not mid-air, not table height).
         z_ok = (cube_pos[:, 2] > disk_top + self.cube_half_z - 0.01) & (
             cube_pos[:, 2] < disk_top + self.cube_half_z + 0.025
         )
         return (xy_dist < self.disk_radius) & z_ok
 
     def _success_mask(self) -> torch.Tensor:
-        # Require a prior lift so hit-and-slide onto the pedestal cannot succeed.
         return self._on_disk() & self._is_released() & self._did_lift
+
+    # --- Hybrid SafeSort-style rewards ---
+
+    def _reward_step(self) -> torch.Tensor:
+        return torch.ones(self.num_envs, device=self.device, dtype=gs.tc_float)
+
+    def _reward_approach(self) -> torch.Tensor:
+        """Potential: improvement in finger→cube distance while not holding."""
+        cur = self._finger_cube_dist()
+        delta = self._prev_finger_cube - cur
+        return torch.where(~self._holding, delta, torch.zeros_like(delta))
+
+    def _reward_attach(self) -> torch.Tensor:
+        return self._attached_this_step.to(dtype=gs.tc_float)
+
+    def _reward_carry(self) -> torch.Tensor:
+        """Potential: improvement in cube→disk XY while holding."""
+        cur = torch.norm(self.object.get_pos()[:, :2] - self.disk_pos[:, :2], dim=-1)
+        delta = self._prev_cube_disk_xy - cur
+        return torch.where(self._holding, delta, torch.zeros_like(delta))
+
+    # --- Legacy joint-mode rewards ---
 
     def _reward_reach(self) -> torch.Tensor:
         return torch.exp(-8.0 * self._finger_cube_dist())
@@ -362,14 +469,12 @@ class SO101KitchenEnv:
     def _reward_lift(self) -> torch.Tensor:
         cube_z = self.object.get_pos()[:, 2]
         height = (cube_z - (self.table_height + self.cube_half_z)).clamp(min=0.0)
-        # Only reward height while grasping so the policy cannot kick the cube upward.
         return self._is_grasping().to(dtype=gs.tc_float) * (height / 0.08).clamp(0.0, 1.0)
 
     def _reward_place(self) -> torch.Tensor:
         cube_pos = self.object.get_pos()
         xy_dist = torch.norm(cube_pos[:, :2] - self.disk_pos[:, :2], dim=-1)
         disk_top = self.table_height + self.disk_height
-        # Prefer approaching the disk while elevated (carrying), then lowering onto it.
         above = (cube_pos[:, 2] > disk_top).to(dtype=gs.tc_float)
         return torch.exp(-8.0 * xy_dist) * (0.35 + 0.65 * above) * self._did_lift.to(dtype=gs.tc_float)
 
