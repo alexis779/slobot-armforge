@@ -295,13 +295,24 @@ class SO101KitchenEnv:
             self._attached_this_step = can_attach
 
         # Kinematic carry while holding.
+        # Genesis expects `pos` shape to match selected `envs_idx` (not full batch).
         if self._holding.any():
             ee = self.robot.center_finger_pose[:, :3]
             ee_quat = self.robot.center_finger_pose[:, 3:7]
             carry_pos = ee + self._attach_offset
             hold_idx = self._holding.nonzero(as_tuple=False).flatten()
-            self.object.set_pos(carry_pos, envs_idx=hold_idx, zero_velocity=True, skip_forward=True)
-            self.object.set_quat(ee_quat, envs_idx=hold_idx, zero_velocity=True, skip_forward=True)
+            self.object.set_pos(
+                carry_pos[hold_idx],
+                envs_idx=hold_idx,
+                zero_velocity=True,
+                skip_forward=True,
+            )
+            self.object.set_quat(
+                ee_quat[hold_idx],
+                envs_idx=hold_idx,
+                zero_velocity=True,
+                skip_forward=True,
+            )
             self._did_lift |= self._holding & self._is_lifted()
 
         cube_pos = self.object.get_pos()
