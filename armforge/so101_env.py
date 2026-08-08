@@ -456,16 +456,18 @@ class SO101KitchenEnv:
         """Potential: improvement in finger→cube distance while not holding."""
         cur = self._finger_cube_dist()
         delta = self._prev_finger_cube - cur
-        return torch.where(~self._holding, delta, torch.zeros_like(delta))
+        return torch.where(~self._holding, delta.clamp(-0.05, 0.05), torch.zeros_like(delta))
 
     def _reward_attach(self) -> torch.Tensor:
         return self._attached_this_step.to(dtype=gs.tc_float)
 
     def _reward_carry(self) -> torch.Tensor:
-        """Potential: improvement in cube→disk XY while holding."""
+        """Potential: improvement in cube→disk XY while holding (skip attach step)."""
         cur = torch.norm(self.object.get_pos()[:, :2] - self.disk_pos[:, :2], dim=-1)
         delta = self._prev_cube_disk_xy - cur
-        return torch.where(self._holding, delta, torch.zeros_like(delta))
+        # Attach teleports the cube; that Δxy is not meaningful progress.
+        active = self._holding & ~self._attached_this_step
+        return torch.where(active, delta.clamp(-0.05, 0.05), torch.zeros_like(delta))
 
     # --- Legacy joint-mode rewards ---
 
